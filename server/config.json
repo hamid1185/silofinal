@@ -1,0 +1,87 @@
+{
+  "thresholds": {
+    "temperature": {
+      "idealMin": 40,
+      "idealMax": 50,
+      "warningMin": 35,
+      "warningMax": 55,
+      "criticalMin": 34,
+      "criticalMax": 56,
+      "unit": "°C"
+    },
+    "humidity": {
+      "idealMin": 90,
+      "idealMax": 100,
+      "warningMin": 90,
+      "warningMax": 100,
+      "criticalMin": 90,
+      "criticalMax": 100,
+      "unit": "%"
+    },
+    "airQuality": {
+      "good": 150,
+      "moderate": 300,
+      "poor": 500,
+      "veryPoor": 600,
+      "unit": "MQ135"
+    },
+    "spoilageRisk": {
+      "low": 20,
+      "medium": 40,
+      "high": 70,
+      "critical": 85,
+      "unit": "%"
+    },
+    "condensation": {
+      "dewPointDifference": 2,
+      "unit": "°C"
+    }
+  },
+  "alerts": {
+    "buzzerEnabled": false,
+    "buzzerDuration": 500,
+    "criticalRiskThreshold": 70,
+    "muteAfterAcknowledge": false,
+    "soundPattern": "pulsing"
+  },
+  "dataCollection": {
+    "sampleInterval": 30000,
+    "autoRefreshInterval": 5000,
+    "dataRetentionDays": 30,
+    "historySize": 10,
+    "unit": "milliseconds"
+  },
+  "analytics": {
+    "trendDetection": {
+      "risingRapidlyThreshold": 1,
+      "risingThreshold": 0.3,
+      "fallingRapidlyThreshold": -1,
+      "fallingThreshold": -0.3,
+      "minimumDataPoints": 3
+    },
+    "predictions": {
+      "minimumDataPoints": 5,
+      "confidenceThresholds": {
+        "high": 70,
+        "medium": 40,
+        "low": 0
+      },
+      "timeToCriticalEnabled": true
+    },
+    "patterns": {
+      "spikeThreshold": 0.15,
+      "accelerationMultiplier": 1.5
+    }
+  },
+  "display": {
+    "chartMaxPoints": 50,
+    "chartTimeRange": 24,
+    "showAdvancedMetrics": false,
+    "temperatureUnit": "celsius"
+  },
+  "system": {
+    "apiKey": "demo123",
+    "port": 3000,
+    "allowRemoteAccess": true
+  }
+}

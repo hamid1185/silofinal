@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sensor History - Silo Monitor</title>
+    <link rel="stylesheet" href="styles.css">
+    <style>
+        .history-container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 17px;
+        }
+
+        .filters {
+            background: #1e293b;
+            border: 1px solid #334155;
+            border-radius: 6px;
+            padding: 14px;
+            margin-bottom: 17px;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 11px;
+        }
+
+        .filter-group {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .filter-group label {
+            font-size: 0.53rem;
+            font-weight: 600;
+            color: #94a3b8;
+            text-transform: uppercase;
+        }
+
+        .filter-group input,
+        .filter-group select {
+            background: #0f172a;
+            border: 1px solid #334155;
+            border-radius: 3px;
+            padding: 6px 8px;
+            color: #e2e8f0;
+            font-size: 0.61rem;
+        }
+
+        .filter-group input:focus,
+        .filter-group select:focus {
+            outline: none;
+            border-color: #3b82f6;
+        }
+
+        .history-table {
+            background: #1e293b;
+            border: 1px solid #334155;
+            border-radius: 6px;
+            overflow: hidden;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        thead {
+            background: #0f172a;
+        }
+
+        th {
+            padding: 11px;
+            text-align: left;
+            font-size: 0.53rem;
+            font-weight: 600;
+            color: #94a3b8;
+            text-transform: uppercase;
+            border-bottom: 1px solid #334155;
+        }
+
+        td {
+            padding: 11px;
+            font-size: 0.61rem;
+            color: #e2e8f0;
+            border-bottom: 1px solid #334155;
+        }
+
+        tbody tr:hover {
+            background: #0f172a;
+        }
+
+        .status-badge {
+            padding: 3px 8px;
+            border-radius: 3px;
+            font-size: 0.49rem;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        .status-good {
+            background: #10b98133;
+            color: #10b981;
+        }
+
+        .status-warning {
+            background: #f59e0b33;
+            color: #f59e0b;
+        }
+
+        .status-critical {
+            background: #ef444433;
+            color: #ef4444;
+        }
+
+        .pagination {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 8px;
+            margin-top: 17px;
+        }
+
+        .pagination button {
+            background: #3b82f6;
+            color: white;
+            border: none;
+            padding: 6px 11px;
+            border-radius: 3px;
+            font-size: 0.53rem;
+            cursor: pointer;
+        }
+
+        .pagination button:disabled {
+            background: #334155;
+            cursor: not-allowed;
+        }
+
+        .pagination span {
+            font-size: 0.61rem;
+            color: #94a3b8;
+        }
+
+        .export-btn {
+            background: #10b981;
+            color: white;
+            border: none;
+            padding: 6px 11px;
+            border-radius: 3px;
+            font-size: 0.53rem;
+            cursor: pointer;
+            margin-left: auto;
+        }
+
+        .no-data {
+            text-align: center;
+            padding: 40px;
+            color: #64748b;
+            font-size: 0.61rem;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="topbar">
+        <div class="topbar-left">
+            <h1>📊 Sensor History</h1>
+        </div>
+        <div class="topbar-right">
+            <button class="refresh-btn" onclick="window.location.href='/'">← Dashboard</button>
+            <button class="refresh-btn" onclick="loadHistory()">🔄 Refresh</button>
+        </div>
+    </div>
+
+    <div class="history-container">
+        <!-- Filters -->
+        <div class="filters">
+            <div class="filter-group">
+                <label>Device ID</label>
+                <select id="deviceFilter" onchange="loadHistory()">
+                    <option value="">All Devices</option>
+                </select>
+            </div>
+            <div class="filter-group">
+                <label>Start Date</label>
+                <input type="datetime-local" id="startDate" onchange="loadHistory()">
+            </div>
+            <div class="filter-group">
+                <label>End Date</label>
+                <input type="datetime-local" id="endDate" onchange="loadHistory()">
+            </div>
+            <div class="filter-group">
+                <label>Health Status</label>
+                <select id="healthFilter" onchange="loadHistory()">
+                    <option value="">All Status</option>
+                    <option value="GOOD">Good</option>
+                    <option value="CAUTION">Caution</option>
+                    <option value="WARNING">Warning</option>
+                    <option value="CRITICAL">Critical</option>
+                </select>
+            </div>
+            <div class="filter-group" style="justify-content: flex-end; flex-direction: row;">
+                <button class="export-btn" onclick="exportToCSV()">📥 Export CSV</button>
+            </div>
+        </div>
+
+        <!-- History Table -->
+        <div class="history-table">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Timestamp</th>
+                        <th>Device ID</th>
+                        <th>Temperature</th>
+                        <th>Humidity</th>
+                        <th>Air Quality</th>
+                        <th>Risk %</th>
+                        <th>Status</th>
+                        <th>Dew Point</th>
+                    </tr>
+                </thead>
+                <tbody id="historyBody">
+                    <tr>
+                        <td colspan="8" class="no-data">Loading history...</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Pagination -->
+        <div class="pagination">
+            <button id="prevBtn" onclick="changePage(-1)">← Previous</button>
+            <span id="pageInfo">Page 1</span>
+            <button id="nextBtn" onclick="changePage(1)">Next →</button>
+        </div>
+    </div>
+
+    <script>
+        let currentPage = 1;
+        const pageSize = 50;
+        let totalRecords = 0;
+        let allData = [];
+
+        async function loadDevices() {
+            try {
+                const response = await fetch('/api/devices');
+                const devices = await response.json();
+                const select = document.getElementById('deviceFilter');
+                devices.forEach(device => {
+                    const option = document.createElement('option');
+                    option.value = device.deviceId;
+                    option.textContent = device.deviceId;
+                    select.appendChild(option);
+                });
+            } catch (error) {
+                console.error('Error loading devices:', error);
+            }
+        }
+
+        async function loadHistory() {
+            try {
+                const deviceId = document.getElementById('deviceFilter').value;
+                const startDate = document.getElementById('startDate').value;
+                const endDate = document.getElementById('endDate').value;
+                const healthFilter = document.getElementById('healthFilter').value;
+
+                let url = '/api/data?limit=1000';
+                if (deviceId) url += `&deviceId=${deviceId}`;
+
+                const response = await fetch(url);
+                allData = await response.json();
+
+                // Apply filters
+                let filtered = allData;
+
+                if (startDate) {
+                    const start = new Date(startDate).getTime();
+                    filtered = filtered.filter(r => new Date(r.timestamp).getTime() >= start);
+                }
+
+                if (endDate) {
+                    const end = new Date(endDate).getTime();
+                    filtered = filtered.filter(r => new Date(r.timestamp).getTime() <= end);
+                }
+
+                if (healthFilter) {
+                    filtered = filtered.filter(r => r.grainHealth === healthFilter);
+                }
+
+                allData = filtered;
+                totalRecords = allData.length;
+                currentPage = 1;
+                renderPage();
+            } catch (error) {
+                console.error('Error loading history:', error);
+                document.getElementById('historyBody').innerHTML =
+                    '<tr><td colspan="8" class="no-data">Error loading data</td></tr>';
+            }
+        }
+
+        function renderPage() {
+            const start = (currentPage - 1) * pageSize;
+            const end = start + pageSize;
+            const pageData = allData.slice(start, end);
+
+            const tbody = document.getElementById('historyBody');
+
+            if (pageData.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="8" class="no-data">No records found</td></tr>';
+                return;
+            }
+
+            tbody.innerHTML = pageData.map(record => `
+                <tr>
+                    <td>${new Date(record.timestamp).toLocaleString()}</td>
+                    <td>${record.deviceId}</td>
+                    <td>${record.temperature?.toFixed(1) || '-'}°C</td>
+                    <td>${record.humidity?.toFixed(1) || '-'}%</td>
+                    <td>${record.mq_value?.toFixed(0) || '-'}</td>
+                    <td>${record.spoilageRisk?.toFixed(1) || '-'}%</td>
+                    <td><span class="status-badge status-${getStatusClass(record.grainHealth)}">${record.grainHealth || '-'}</span></td>
+                    <td>${record.dewPoint?.toFixed(1) || '-'}°C</td>
+                </tr>
+            `).join('');
+
+            // Update pagination
+            const totalPages = Math.ceil(totalRecords / pageSize);
+            document.getElementById('pageInfo').textContent = `Page ${currentPage} of ${totalPages} (${totalRecords} records)`;
+            document.getElementById('prevBtn').disabled = currentPage === 1;
+            document.getElementById('nextBtn').disabled = currentPage >= totalPages;
+        }
+
+        function getStatusClass(status) {
+            if (status === 'GOOD') return 'good';
+            if (status === 'CRITICAL') return 'critical';
+            return 'warning';
+        }
+
+        function changePage(delta) {
+            currentPage += delta;
+            renderPage();
+        }
+
+        function exportToCSV() {
+            const headers = ['Timestamp', 'Device ID', 'Temperature', 'Humidity', 'Air Quality', 'Risk %', 'Status', 'Dew Point'];
+            const rows = allData.map(r => [
+                new Date(r.timestamp).toISOString(),
+                r.deviceId,
+                r.temperature?.toFixed(1) || '',
+                r.humidity?.toFixed(1) || '',
+                r.mq_value?.toFixed(0) || '',
+                r.spoilageRisk?.toFixed(1) || '',
+                r.grainHealth || '',
+                r.dewPoint?.toFixed(1) || ''
+            ]);
+
+            const csv = [headers, ...rows].map(row => row.join(',')).join('\n');
+            const blob = new Blob([csv], { type: 'text/csv' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `silo-history-${new Date().toISOString().split('T')[0]}.csv`;
+            a.click();
+        }
+
+        // Initialize
+        loadDevices();
+        loadHistory();
+    </script>
+</body>
+
+</html>
