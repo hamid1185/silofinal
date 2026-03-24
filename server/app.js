@@ -243,6 +243,15 @@ app.post("/api/silos/:id/nodes", (req, res) => {
     });
 });
 
+// Unassign a node from any silo
+app.delete("/api/silos/nodes/:deviceId", (req, res) => {
+    const { deviceId } = req.params;
+    db.run("DELETE FROM silo_nodes WHERE deviceId = ?", [deviceId], function(err) {
+        if (err) return res.status(500).json({ error: "Database error" });
+        res.json({ success: true, message: "Node unassigned" });
+    });
+});
+
 // Get Silo Aggregate Data
 app.get("/api/silos/:id/aggregate", (req, res) => {
     const { id } = req.params;
