@@ -149,6 +149,20 @@ db.run(`CREATE TABLE IF NOT EXISTS sensor_data (
     else console.log("✅ Enhanced sensor table ready");
 });
 
+// Create Silo tables
+db.run(`CREATE TABLE IF NOT EXISTS silos (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+)`);
+
+db.run(`CREATE TABLE IF NOT EXISTS silo_nodes (
+  siloId TEXT,
+  deviceId TEXT,
+  PRIMARY KEY (siloId, deviceId),
+  FOREIGN KEY(siloId) REFERENCES silos(id)
+)`);
+
 // Create indexes
 db.run("CREATE INDEX IF NOT EXISTS idx_deviceId ON sensor_data(deviceId)", (err) => {
     if (err) console.error("Index error:", err.message);
@@ -167,7 +181,128 @@ const apiKeyMiddleware = (req, res, next) => {
     next();
 };
 
-// API Routes
+// ==========================================
+// SILO API ROUTES
+// ==========================================
+
+// Get all silos with their node counts
+app.get("/api/silos", (req, res) => {
+    const query = `
+      SELECT s.id, s.name, s.createdAt, COUNT(sn.deviceId) as nodeCount
+      FROM silos s
+      LEFT JOIN silo_nodes sn ON s.id = sn.siloId
+      GROUP BY s.id
+      ORDER BY s.name ASC
+    `;
+    db.all(query, [], (err, rows) => {
+        if (err) return res.status(500).json({ error: "Database error" });
+        res.json(rows || []);
+    });
+});
+
+// Create a new silo
+app.post("/api/silos", (req, res) => {
+    const { id, name } = req.body;
+    if (!id || !name) return res.status(400).json({ error: "id and name are required" });
+
+    db.run(
+        "INSERT INTO silos (id, name) VALUES (?, ?)",
+        [id, name],
+        function(err) {
+            if (err) {
+                if (err.message.includes("UNIQUE constraint failed")) {
+                    return res.status(409).json({ error: "Silo ID already exists" });
+                }
+                return res.status(500).json({ error: "Database error" });
+            }
+            res.json({ success: true, message: "Silo created", id, name });
+        }
+    );
+});
+
+// Assign a node to a silo
+app.post("/api/silos/:id/nodes", (req, res) => {
+    const { id } = req.params;
+    const { deviceId } = req.body;
+    
+    if (!deviceId) return res.status(400).json({ error: "deviceId is required" });
+
+    // First delete any existing assignment for this device
+    db.run("DELETE FROM silo_nodes WHERE deviceId = ?", [deviceId], (err) => {
+        if (err) return res.status(500).json({ error: "Database error" });
+
+        // Then insert the new assignment
+        db.run(
+            "INSERT INTO silo_nodes (siloId, deviceId) VALUES (?, ?)",
+            [id, deviceId],
+            function(err) {
+                if (err) return res.status(500).json({ error: "Database error" });
+                res.json({ success: true, message: "Node assigned to silo" });
+            }
+        );
+    });
+});
+
+// Get Silo Aggregate Data
+app.get("/api/silos/:id/aggregate", (req, res) => {
+    const { id } = req.params;
+    // Uses the latest reading from each node mapped to the silo
+    const query = `
+      WITH LatestReadings AS (
+        SELECT s1.* 
+        FROM sensor_data s1
+        INNER JOIN (
+          SELECT deviceId, MAX(timestamp) as latest 
+          FROM sensor_data 
+          GROUP BY deviceId
+        ) s2 ON s1.deviceId = s2.deviceId AND s1.timestamp = s2.latest
+        INNER JOIN silo_nodes sn ON sn.deviceId = s1.deviceId
+        WHERE sn.siloId = ?
+      )
+      SELECT 
+        AVG(temperature) as avgTemperature,
+        AVG(humidity) as avgHumidity,
+        MAX(spoilageRisk) as maxSpoilageRisk,
+        MAX(mq_value) as maxMqValue,
+        COUNT(deviceId) as nodeCount
+      FROM LatestReadings
+    `;
+
+    db.get(query, [id], (err, row) => {
+        if (err) return res.status(500).json({ error: "Database error" });
+        
+        // Find if any node is offline
+        const offlineQuery = `
+          SELECT COUNT(*) as offlineCount 
+          FROM silo_nodes sn
+          LEFT JOIN (
+            SELECT deviceId, MAX(timestamp) as latest 
+            FROM sensor_data 
+            GROUP BY deviceId
+          ) s ON sn.deviceId = s.deviceId
+          WHERE sn.siloId = ? AND (s.latest IS NULL OR s.latest < datetime('now', '-1 hour'))
+        `;
+
+        db.get(offlineQuery, [id], (err, offlineRow) => {
+            if (err) return res.status(500).json({ error: "Database error" });
+            
+            res.json({
+                ...row,
+                offlineCount: offlineRow.offlineCount,
+                // Assign an aggregate status correctly
+                status: row.maxSpoilageRisk > 70 ? 'critical' 
+                      : row.maxSpoilageRisk > 40 ? 'warning' 
+                      : offlineRow.offlineCount > 0 ? 'warning'
+                      : 'online'
+            });
+        });
+    });
+});
+
+// ==========================================
+// EXISTING NODE API ROUTES
+// ==========================================
+
 // GET all data (for history page)
 app.get("/api/data", (req, res) => {
     const { deviceId, limit = 1000 } = req.query;
@@ -241,13 +376,14 @@ app.post("/api/data", apiKeyMiddleware, (req, res) => {
 // Get latest readings from all devices
 app.get("/api/latest", (req, res) => {
     const query = `
-    SELECT s1.* 
+    SELECT s1.*, sn.siloId
     FROM sensor_data s1
     INNER JOIN (
       SELECT deviceId, MAX(timestamp) as latest 
       FROM sensor_data 
       GROUP BY deviceId
     ) s2 ON s1.deviceId = s2.deviceId AND s1.timestamp = s2.latest
+    LEFT JOIN silo_nodes sn ON s1.deviceId = sn.deviceId
     ORDER BY s1.deviceId
   `;
 
@@ -457,30 +593,32 @@ app.get("/api/devices", (req, res) => {
     });
 });
 
-// Get system stats
+// Get device history (supports hours-based or start/end date range)
 app.get("/api/history/:deviceId", (req, res) => {
     const { deviceId } = req.params;
-    const { limit = 50, hours = 24 } = req.query;
+    const { limit = 50, hours = 24, start, end } = req.query;
 
-    const query = `
-    SELECT 
-      id, deviceId, temperature, humidity, mq_value, spoilageRisk, 
+    const cols = `id, deviceId, temperature, humidity, mq_value, spoilageRisk,
       grainHealth, dewPoint, absoluteHumidity, vaporPressureDeficit,
       equilibriumMoistureContent, trendAnalysis, prediction, rssi, ip,
       datetime(timestamp, 'localtime') as ts_server,
-      strftime('%H:%M', timestamp, 'localtime') as time_display
-    FROM sensor_data 
-    WHERE deviceId = ? AND timestamp >= datetime('now', ?)
-    ORDER BY timestamp DESC LIMIT ?
-  `;
+      strftime('%H:%M', timestamp, 'localtime') as time_display`;
 
-    db.all(query, [deviceId, `-${hours} hours`, parseInt(limit)], (err, rows) => {
+    let query, params;
+    if (start && end) {
+        query = `SELECT ${cols} FROM sensor_data WHERE deviceId = ? AND timestamp >= ? AND timestamp <= ? ORDER BY timestamp ASC LIMIT ?`;
+        params = [deviceId, start, end, parseInt(limit)];
+    } else {
+        query = `SELECT ${cols} FROM sensor_data WHERE deviceId = ? AND timestamp >= datetime('now', ?) ORDER BY timestamp ASC LIMIT ?`;
+        params = [deviceId, `-${hours} hours`, parseInt(limit)];
+    }
+
+    db.all(query, params, (err, rows) => {
         if (err) {
             console.error("❌ DB read error:", err);
             return res.status(500).json({ error: "Database error" });
         }
-        // Reverse to get chronological order for chart
-        res.json(rows.reverse());
+        res.json(rows);
     });
 });
 
