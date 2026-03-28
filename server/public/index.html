@@ -258,10 +258,11 @@
       // Process results
       results.forEach((result, index) => {
         if (result.status === 'fulfilled' && result.value) {
-          const device = devicesData.find(d => d.status === 'online' && latestReadings[d.deviceId]);
+          const deviceId = result.value.deviceId; // Changed to use the mapped id
+          const device = devicesData.find(d => d.deviceId === deviceId);
           if (device) {
             hasAnalytics = true;
-            renderAnalyticsCard(device.deviceId, result.value);
+            renderAnalyticsCard(device.deviceId, result.value.data); // pass data
           }
         }
       });
@@ -294,7 +295,7 @@
         }
 
         analyticsData[deviceId] = analytics;
-        return analytics;
+        return { deviceId, data: analytics }; // Return object so we can identify!
       } catch (error) {
         console.error(`Error loading analytics for ${deviceId}:`, error);
         return null;
