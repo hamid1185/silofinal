@@ -11,13 +11,18 @@ const PORT = process.env.PORT || 3000;
 
 // Initialize Firebase Admin
 try {
-    const serviceAccount = require("./serviceAccountKey.json");
+    let serviceAccount;
+    if (process.env.FIREBASE_SERVICE_ACCOUNT) {
+        serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+    } else {
+        serviceAccount = require("./serviceAccountKey.json");
+    }
     admin.initializeApp({
         credential: admin.credential.cert(serviceAccount)
     });
     console.log("✅ Firebase Admin initialized");
 } catch (e) {
-    console.error("⚠️ Firebase Admin initialization failed (missing serviceAccountKey.json). Push notifications disabled.");
+    console.error("⚠️ Firebase Admin initialization failed (missing serviceAccount file or env variable). Push notifications disabled.", e.message);
 }
 
 // Configuration management
@@ -285,7 +290,7 @@ app.post("/api/data", apiKeyMiddleware, (req, res) => {
 app.post("/api/fcm-token", (req, res) => {
     const { token } = req.body;
     if (!token) return res.status(400).json({ error: "Token required" });
-    db.run(`INSERT OR IGNORE INTO fcm_tokens (token) VALUES (?)`, [token], function(err) {
+    db.run(`INSERT OR IGNORE INTO fcm_tokens (token) VALUES (?)`, [token], function (err) {
         if (err) {
             console.error("❌ FCM DB error:", err);
             return res.status(500).json({ error: "Database error" });
