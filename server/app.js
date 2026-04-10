@@ -299,6 +299,17 @@ app.post("/api/fcm-token", (req, res) => {
     });
 });
 
+app.get("/api/fcm-health", (req, res) => {
+    db.all("SELECT * FROM fcm_tokens", (err, rows) => {
+        res.json({
+            firebase_initialized: admin.apps.length > 0,
+            has_env_var: !!process.env.FIREBASE_SERVICE_ACCOUNT,
+            registered_tokens_count: rows ? rows.length : 0,
+            tokens: rows ? rows.map(r => r.token.substring(0, 5) + "...") : []
+        });
+    });
+});
+
 // Get latest readings from all devices
 app.get("/api/latest", (req, res) => {
     const query = `
