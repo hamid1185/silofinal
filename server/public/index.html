@@ -7,25 +7,45 @@
   <title>Silo Monitor Dashboard</title>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <link rel="stylesheet" href="styles.css">
+  <style>
+    .farmer-tag { font-size: 0.8rem; color: #94a3b8; display: flex; align-items: center; gap: 6px; }
+    .farmer-tag .dot { width: 7px; height: 7px; border-radius: 50%; background: #10b981; animation: pulse 2s infinite; }
+    @keyframes pulse { 0%,100%{opacity:1;} 50%{opacity:0.4;} }
+    .delete-node-btn {
+      background: rgba(239,68,68,0.1); color: #fca5a5;
+      border: 1px solid rgba(239,68,68,0.25); border-radius: 6px;
+      padding: 5px 12px; font-size: 0.75rem; cursor: pointer;
+      transition: background 0.15s, border-color 0.15s;
+    }
+    .delete-node-btn:hover { background: rgba(239,68,68,0.22); border-color: #ef4444; color: white; }
+    .node-actions { display: flex; justify-content: flex-end; margin-top: 12px; }
+    .toast {
+      position:fixed; bottom:24px; right:24px;
+      background:#111827; border:1px solid #1e3a5f;
+      border-radius:10px; padding:12px 18px; font-size:0.85rem;
+      box-shadow:0 8px 32px rgba(0,0,0,0.4); display:none;
+      align-items:center; gap:10px; z-index:9999; max-width:320px;
+    }
+    .toast.show { display:flex; }
+    .toast.success { border-left:3px solid #10b981; color:#f1f5f9; }
+    .toast.error { border-left:3px solid #ef4444; color:#fca5a5; }
+  </style>
 </head>
 
 <body>
   <div class="topbar">
     <div class="topbar-left">
-      <h1>Silo Health Monitor</h1>
+      <h1>🌾 Silo Health Monitor</h1>
     </div>
     <div class="topbar-right">
-      <span>Last updated: <span id="lastUpdated">-</span></span>
-      <button class="refresh-btn" onclick="window.location.href='/settings.html'" style="background: #10b981;">
-        ⚙️ Settings
-      </button>
-      <button class="refresh-btn" onclick="window.location.href='/history.html'" style="background: #8b5cf6;">
-        History
-      </button>
+      <div class="farmer-tag"><span class="dot"></span><span id="farmerLabel">Loading...</span></div>
+      <span style="color:#64748b;font-size:0.8rem">Last updated: <span id="lastUpdated">-</span></span>
+      <button class="refresh-btn" onclick="window.location.href='/history.html'" style="background: #8b5cf6;">History</button>
       <button class="refresh-btn" onclick="refreshAll()">
         <span class="spinner" id="refreshSpinner" style="display: none;"></span>
         Refresh
       </button>
+      <button class="refresh-btn" style="background:#334155;" onclick="logout()">Sign Out</button>
     </div>
   </div>
 
@@ -92,14 +112,45 @@
 
   <div class="timestamp">Updated at <span id="timestamp">-</span></div>
 
+  <div class="toast" id="toastMsg"></div>
+
   <script>
     let charts = {};
     let devicesData = {};
     let latestReadings = {};
     let analyticsData = {};
     let refreshInterval;
+    let session = null;
+
+    // ── Auth guard ──
+    function initAuth() {
+      session = JSON.parse(localStorage.getItem('siloSession') || 'null');
+      if (!session || !session.farmerId) {
+        window.location.href = '/login.html';
+        return false;
+      }
+      document.getElementById('farmerLabel').textContent = `👤 ${session.username}`;
+      return true;
+    }
+
+    function logout() {
+      localStorage.removeItem('siloSession');
+      window.location.href = '/login.html';
+    }
+
+    function authHeaders() {
+      return session ? { 'x-farmer-id': String(session.farmerId) } : {};
+    }
+
+    function showToast(msg, type = 'success') {
+      const el = document.getElementById('toastMsg');
+      el.textContent = msg;
+      el.className = `toast show ${type}`;
+      setTimeout(() => { el.className = 'toast'; }, 3500);
+    }
 
     async function initDashboard() {
+      if (!initAuth()) return;
       console.log('Initializing dashboard...');
       await loadData();
 
@@ -176,7 +227,7 @@
 
     async function loadStats() {
       try {
-        const response = await fetch('/api/stats');
+        const response = await fetch('/api/stats', { headers: authHeaders() });
         const stats = await response.json();
 
         document.getElementById('totalReadingsKpi').textContent =
@@ -195,7 +246,7 @@
 
     async function loadDevices() {
       try {
-        const response = await fetch('/api/devices');
+        const response = await fetch('/api/devices', { headers: authHeaders() });
         const devices = await response.json();
         devicesData = devices || [];
         console.log(`Loaded ${devicesData.length} devices`);
@@ -207,7 +258,7 @@
 
     async function loadLatestReadings() {
       try {
-        const response = await fetch('/api/latest');
+        const response = await fetch('/api/latest', { headers: authHeaders() });
         const readings = await response.json();
 
         latestReadings = {};
@@ -279,7 +330,7 @@
     async function loadDeviceAnalytics(deviceId) {
       try {
         console.log(`Loading analytics for ${deviceId}...`);
-        const response = await fetch(`/api/trends/${deviceId}?hours=24`);
+        const response = await fetch(`/api/trends/${deviceId}?hours=24`, { headers: authHeaders() });
 
         if (!response.ok) {
           console.error(`Failed to load analytics for ${deviceId}: ${response.status}`);
@@ -404,6 +455,12 @@
             <div class="node-chart" id="chart-${device.deviceId}">
               <div class="chart-empty">Loading chart...</div>
             </div>
+
+            <div class="node-actions">
+              <button class="delete-node-btn" onclick="confirmDeleteNode('${device.deviceId}')">
+                🗑️ Delete Node
+              </button>
+            </div>
           </div>
         `;
       }).join('');
@@ -510,9 +567,28 @@
       return icons[trendLower] || '📊';
     }
 
+    async function confirmDeleteNode(deviceId) {
+      if (!confirm(`Delete node "${deviceId}"?\n\nThis will permanently erase ALL historical data for this node.\nThe node will disappear from the dashboard.\n\nThis cannot be undone.`)) return;
+      try {
+        const res = await fetch(`/api/nodes/${encodeURIComponent(deviceId)}`, {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json', ...authHeaders() }
+        });
+        const data = await res.json();
+        if (!res.ok) { showToast(data.error || 'Delete failed', 'error'); return; }
+        showToast(`🗑️ Node "${deviceId}" deleted`, 'success');
+        // Reload the dashboard data
+        Object.values(charts).forEach(c => c.destroy());
+        charts = {};
+        await loadData();
+      } catch (err) {
+        showToast('Network error: ' + err.message, 'error');
+      }
+    }
+
     async function loadDeviceChart(deviceId) {
       try {
-        const response = await fetch(`/api/history/${deviceId}?limit=50&hours=24`);
+        const response = await fetch(`/api/history/${deviceId}?limit=50&hours=24`, { headers: authHeaders() });
         const rows = await response.json();
 
         const chartDiv = document.getElementById(`chart-${deviceId}`);

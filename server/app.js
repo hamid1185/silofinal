@@ -5,6 +5,7 @@ const cors = require("cors");
 const path = require("path");
 const fs = require("fs");
 const admin = require("firebase-admin");
+const bcrypt = require("bcryptjs");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -175,7 +176,74 @@ db.run(`CREATE TABLE IF NOT EXISTS fcm_tokens (
     else console.log("✅ FCM token table ready");
 });
 
+// Multi-farmer tables
+db.run(`CREATE TABLE IF NOT EXISTS farmers (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  username TEXT UNIQUE NOT NULL,
+  pin TEXT NOT NULL,
+  role TEXT DEFAULT 'farmer',
+  ref_code TEXT UNIQUE,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+)`, (err) => {
+    if (err) { console.error("❌ Farmers table error:", err.message); return; }
+    console.log("✅ Farmers table ready");
 
+    // Migration: Add ref_code column if it doesn't exist (for existing tables)
+    db.run("ALTER TABLE farmers ADD COLUMN ref_code TEXT UNIQUE", (err) => {
+        // Ignore error if column already exists
+        
+        // Populate existing farmers without ref_codes
+        db.all("SELECT id FROM farmers WHERE ref_code IS NULL", (err, rows) => {
+            if (!err && rows && rows.length > 0) {
+                rows.forEach(row => {
+                    const code = Math.floor(100000 + Math.random() * 900000).toString();
+                    db.run("UPDATE farmers SET ref_code = ? WHERE id = ?", [code, row.id]);
+                });
+                console.log(`✅ Generated ref_codes for ${rows.length} farmers`);
+            }
+        });
+    });
+
+    // Seed default admin account if no farmers exist
+    db.get("SELECT COUNT(*) as cnt FROM farmers", (err, row) => {
+        if (!err && row.cnt === 0) {
+            const adminRef = Math.floor(100000 + Math.random() * 900000).toString();
+            const hashedPin = bcrypt.hashSync("0000", 10);
+            db.run("INSERT INTO farmers (username, pin, role, ref_code) VALUES (?, ?, ?, ?)",
+                ["admin", hashedPin, "admin", adminRef],
+                () => console.log(`✅ Default admin created (pin: 0000, ref: ${adminRef})`));
+        }
+    });
+
+    // Auto-migration for plain-text PINs
+    db.all("SELECT id, pin FROM farmers", (err, rows) => {
+        if (err || !rows) return;
+        let migrationCount = 0;
+        rows.forEach(row => {
+            // bcyrpt hashes start with $2a$ or $2b$
+            if (row.pin && !row.pin.startsWith('$2')) {
+                const hashed = bcrypt.hashSync(row.pin, 10);
+                db.run("UPDATE farmers SET pin = ? WHERE id = ?", [hashed, row.id]);
+                migrationCount++;
+            }
+        });
+        if (migrationCount > 0) {
+            console.log(`🔒 Migrated ${migrationCount} plain-text PINs to hashed versions`);
+        }
+    });
+});
+
+
+db.run(`CREATE TABLE IF NOT EXISTS node_assignments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  deviceId TEXT NOT NULL,
+  farmer_id INTEGER NOT NULL,
+  assigned_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(deviceId, farmer_id)
+)`, (err) => {
+    if (err) console.error("❌ Node assignments table error:", err.message);
+    else console.log("✅ Node assignments table ready");
+});
 
 // Create indexes
 db.run("CREATE INDEX IF NOT EXISTS idx_deviceId ON sensor_data(deviceId)", (err) => {
@@ -186,7 +254,7 @@ db.run("CREATE INDEX IF NOT EXISTS idx_timestamp ON sensor_data(timestamp)", (er
     if (err) console.error("Index error:", err.message);
 });
 
-// API key middleware
+// API key middleware (for ESP nodes)
 const apiKeyMiddleware = (req, res, next) => {
     const apiKey = req.headers['x-api-key'];
     if (!apiKey || apiKey !== "demo123") {
@@ -194,6 +262,51 @@ const apiKeyMiddleware = (req, res, next) => {
     }
     next();
 };
+
+// Farmer auth middleware — resolves farmer from x-farmer-id header
+const farmerMiddleware = (req, res, next) => {
+    const farmerId = req.headers['x-farmer-id'];
+    if (!farmerId) return res.status(401).json({ error: "Not authenticated" });
+    db.get("SELECT * FROM farmers WHERE id = ?", [farmerId], (err, row) => {
+        if (err || !row) return res.status(401).json({ error: "Invalid session" });
+        req.farmer = row;
+        next();
+    });
+};
+
+// Admin-only middleware
+const adminMiddleware = (req, res, next) => {
+    const farmerId = req.headers['x-farmer-id'];
+    if (!farmerId) return res.status(401).json({ error: "Not authenticated" });
+    db.get("SELECT * FROM farmers WHERE id = ? AND role = 'admin'", [farmerId], (err, row) => {
+        if (err || !row) return res.status(403).json({ error: "Admin access required" });
+        req.farmer = row;
+        next();
+    });
+};
+
+// Helper: get deviceIds assigned to a farmer
+function getFarmerDeviceIds(farmerId, callback) {
+    if (farmerId === 'admin') {
+        // Admin with role check — get all
+        db.all("SELECT deviceId FROM node_assignments", (err, rows) => {
+            callback(err, rows ? rows.map(r => r.deviceId) : []);
+        });
+        return;
+    }
+    db.get("SELECT role FROM farmers WHERE id = ?", [farmerId], (err, farmer) => {
+        if (err || !farmer) return callback(err || new Error('Not found'), []);
+        if (farmer.role === 'admin') {
+            db.all("SELECT DISTINCT deviceId FROM sensor_data", (err2, rows) => {
+                callback(err2, rows ? rows.map(r => r.deviceId) : []);
+            });
+        } else {
+            db.all("SELECT deviceId FROM node_assignments WHERE farmer_id = ?", [farmerId], (err2, rows) => {
+                callback(err2, rows ? rows.map(r => r.deviceId) : []);
+            });
+        }
+    });
+}
 
 // Helper to send FCM notifications
 function sendFcmNotification(title, body) {
@@ -207,6 +320,173 @@ function sendFcmNotification(title, body) {
             .catch(e => console.error("❌ Push error:", e));
     });
 }
+
+
+// POST /api/auth/register
+app.post("/api/auth/register", (req, res) => {
+    const { username, pin } = req.body;
+    if (!username || !pin) return res.status(400).json({ error: "Username and PIN required" });
+    
+    // Generate unique 6-digit numeric ref_code
+    const refCode = Math.floor(100000 + Math.random() * 900000).toString();
+    
+    // Hash the PIN
+    const hashedPin = bcrypt.hashSync(pin.trim(), 10);
+    
+    db.run("INSERT INTO farmers (username, pin, role, ref_code) VALUES (?, ?, 'farmer', ?)",
+        [username.trim(), hashedPin, refCode],
+        function (err) {
+            if (err) {
+                if (err.message.includes('UNIQUE')) return res.status(409).json({ error: "Username already exists" });
+                return res.status(500).json({ error: "DB error" });
+            }
+            res.json({ 
+                success: true, 
+                farmerId: this.lastID, 
+                username, 
+                refCode 
+            });
+        }
+    );
+});
+
+
+// POST /api/auth/login
+app.post("/api/auth/login", (req, res) => {
+    const { username, pin } = req.body;
+    if (!username || !pin) return res.status(400).json({ error: "Username and PIN required" });
+    db.get("SELECT * FROM farmers WHERE username = ?", [username.trim()], (err, row) => {
+        if (err || !row) return res.status(401).json({ error: "Invalid username or PIN" });
+        
+        // Compare hashed PIN
+        const match = bcrypt.compareSync(pin.trim(), row.pin);
+        if (!match) return res.status(401).json({ error: "Invalid username or PIN" });
+
+        res.json({ 
+            success: true, 
+            farmerId: row.id, 
+            username: row.username, 
+            role: row.role,
+            refCode: row.ref_code 
+        });
+    });
+});
+
+// GET /api/farmers — admin only
+app.get("/api/farmers", adminMiddleware, (req, res) => {
+    db.all("SELECT id, username, role, ref_code, created_at FROM farmers ORDER BY id ASC", (err, rows) => {
+        if (err) return res.status(500).json({ error: "DB error" });
+        res.json(rows || []);
+    });
+});
+
+// POST /api/farmers — admin only: create farmer
+app.post("/api/farmers", adminMiddleware, (req, res) => {
+    const { username, pin, role } = req.body;
+    if (!username || !pin) return res.status(400).json({ error: "Username and PIN required" });
+    const safeRole = role === 'admin' ? 'admin' : 'farmer';
+    const hashedPin = bcrypt.hashSync(pin.trim(), 10);
+    db.run("INSERT INTO farmers (username, pin, role) VALUES (?, ?, ?)",
+        [username.trim(), hashedPin, safeRole],
+        function (err) {
+            if (err) {
+                if (err.message.includes('UNIQUE')) return res.status(409).json({ error: "Username already exists" });
+                return res.status(500).json({ error: "DB error" });
+            }
+            res.json({ success: true, id: this.lastID, username, role: safeRole });
+        }
+    );
+});
+
+// DELETE /api/farmers/:id — admin only
+app.delete("/api/farmers/:id", adminMiddleware, (req, res) => {
+    const { id } = req.params;
+    if (parseInt(id) === req.farmer.id) return res.status(400).json({ error: "Cannot delete yourself" });
+    db.run("DELETE FROM node_assignments WHERE farmer_id = ?", [id], () => {
+        db.run("DELETE FROM farmers WHERE id = ?", [id], function (err) {
+            if (err) return res.status(500).json({ error: "DB error" });
+            res.json({ success: true });
+        });
+    });
+});
+
+// GET /api/nodes/assignments — admin: all assignments
+app.get("/api/nodes/assignments", adminMiddleware, (req, res) => {
+    const q = `
+        SELECT na.id, na.deviceId, na.farmer_id, f.username, na.assigned_at
+        FROM node_assignments na
+        JOIN farmers f ON f.id = na.farmer_id
+        ORDER BY na.farmer_id, na.deviceId
+    `;
+    db.all(q, (err, rows) => {
+        if (err) return res.status(500).json({ error: "DB error" });
+        res.json(rows || []);
+    });
+});
+
+// POST /api/nodes/assign — admin: assign node to farmer
+app.post("/api/nodes/assign", adminMiddleware, (req, res) => {
+    const { deviceId, farmer_id } = req.body;
+    if (!deviceId || !farmer_id) return res.status(400).json({ error: "deviceId and farmer_id required" });
+    db.run("INSERT OR IGNORE INTO node_assignments (deviceId, farmer_id) VALUES (?, ?)",
+        [deviceId, farmer_id],
+        function (err) {
+            if (err) return res.status(500).json({ error: "DB error" });
+            res.json({ success: true, assigned: this.changes > 0 });
+        }
+    );
+});
+
+// DELETE /api/nodes/assign — admin: remove assignment
+app.delete("/api/nodes/assign", adminMiddleware, (req, res) => {
+    const { deviceId, farmer_id } = req.body;
+    db.run("DELETE FROM node_assignments WHERE deviceId = ? AND farmer_id = ?",
+        [deviceId, farmer_id],
+        function (err) {
+            if (err) return res.status(500).json({ error: "DB error" });
+            res.json({ success: true });
+        }
+    );
+});
+
+// DELETE /api/nodes/:deviceId — farmer deletes their own node (or admin any node)
+app.delete("/api/nodes/:deviceId", farmerMiddleware, (req, res) => {
+    const { deviceId } = req.params;
+    const farmer = req.farmer;
+
+    const doDelete = () => {
+        db.run("DELETE FROM node_assignments WHERE deviceId = ?", [deviceId], () => {
+            db.run("DELETE FROM sensor_data WHERE deviceId = ?", [deviceId], function (err) {
+                if (err) return res.status(500).json({ error: "DB error" });
+                console.log(`🗑️ Node ${deviceId} deleted by ${farmer.username}`);
+                res.json({ success: true, deleted: this.changes });
+            });
+        });
+    };
+
+    if (farmer.role === 'admin') {
+        doDelete();
+    } else {
+        db.get("SELECT * FROM node_assignments WHERE deviceId = ? AND farmer_id = ?",
+            [deviceId, farmer.id], (err, row) => {
+                if (err || !row) return res.status(403).json({ error: "Not your node" });
+                doDelete();
+            });
+    }
+});
+
+// GET /api/nodes/unassigned — admin: nodes with no assignment
+app.get("/api/nodes/unassigned", adminMiddleware, (req, res) => {
+    const q = `
+        SELECT DISTINCT deviceId FROM sensor_data
+        WHERE deviceId NOT IN (SELECT DISTINCT deviceId FROM node_assignments)
+        ORDER BY deviceId
+    `;
+    db.all(q, (err, rows) => {
+        if (err) return res.status(500).json({ error: "DB error" });
+        res.json(rows ? rows.map(r => r.deviceId) : []);
+    });
+});
 
 // ==========================================
 // NODE API ROUTES
@@ -245,6 +525,21 @@ app.post("/api/data", apiKeyMiddleware, (req, res) => {
     } = req.body;
 
     console.log(`📥 ${deviceId}: ${temperature}°C, ${humidity}%, Risk: ${spoilageRisk}%`);
+
+    // --- AUTO-ASSIGNMENT LOGIC ---
+    if (deviceId && deviceId.includes('_')) {
+        const prefix = deviceId.split('_')[0];
+        // Check if prefix is a valid ref_code
+        db.get("SELECT id FROM farmers WHERE ref_code = ?", [prefix], (err, farmer) => {
+            if (!err && farmer) {
+                // Farmer found. Ensure assignment exists (or update if reassigned)
+                db.run("DELETE FROM node_assignments WHERE deviceId = ?", [deviceId], () => {
+                   db.run("INSERT INTO node_assignments (deviceId, farmer_id) VALUES (?, ?)", [deviceId, farmer.id]);
+                });
+            }
+        });
+    }
+
 
     if (parseFloat(spoilageRisk) >= 80 || grainHealth === "CRITICAL") {
         sendFcmNotification("Critical Spoilage Alert", `Node ${deviceId || 'unknown'} has critical risk: ${parseFloat(spoilageRisk).toFixed(1)}%`);
@@ -310,26 +605,36 @@ app.get("/api/fcm-health", (req, res) => {
     });
 });
 
-// Get latest readings from all devices
+// Get latest readings from all devices (filtered by farmer if x-farmer-id provided)
 app.get("/api/latest", (req, res) => {
-    const query = `
-    SELECT s1.*
-    FROM sensor_data s1
-    INNER JOIN (
-      SELECT deviceId, MAX(timestamp) as latest 
-      FROM sensor_data 
-      GROUP BY deviceId
-    ) s2 ON s1.deviceId = s2.deviceId AND s1.timestamp = s2.latest
-    ORDER BY s1.deviceId
-  `;
+    const farmerId = req.headers['x-farmer-id'];
 
-    db.all(query, (err, rows) => {
-        if (err) {
-            console.error("❌ DB read error:", err);
-            return res.status(500).json({ error: "Database error" });
-        }
-        res.json(rows || []);
-    });
+    const runQuery = (deviceFilter) => {
+        let query = `
+        SELECT s1.*
+        FROM sensor_data s1
+        INNER JOIN (
+          SELECT deviceId, MAX(timestamp) as latest 
+          FROM sensor_data
+          ${deviceFilter.length > 0 ? `WHERE deviceId IN (${deviceFilter.map(() => '?').join(',')})` : ''}
+          GROUP BY deviceId
+        ) s2 ON s1.deviceId = s2.deviceId AND s1.timestamp = s2.latest
+        ORDER BY s1.deviceId
+      `;
+        db.all(query, deviceFilter, (err, rows) => {
+            if (err) { console.error("❌ DB read error:", err); return res.status(500).json({ error: "Database error" }); }
+            res.json(rows || []);
+        });
+    };
+
+    if (farmerId) {
+        getFarmerDeviceIds(farmerId, (err, ids) => {
+            if (err) return res.status(500).json({ error: "DB error" });
+            runQuery(ids);
+        });
+    } else {
+        runQuery([]);
+    }
 });
 
 
@@ -502,31 +807,44 @@ function validateConfig(config) {
 
 
 
-// Get device list with status
+// Get device list with status (filtered by farmer if x-farmer-id provided)
 app.get("/api/devices", (req, res) => {
-    const query = `
-    SELECT 
-      deviceId,
-      MIN(timestamp) as firstSeen,
-      MAX(timestamp) as lastSeen,
-      COUNT(*) as readingCount,
-      CASE 
-        WHEN datetime(MAX(timestamp)) >= datetime('now', '-5 minutes') THEN 'online'
-        WHEN datetime(MAX(timestamp)) >= datetime('now', '-1 hour') THEN 'recent'
-        ELSE 'offline'
-      END as status
-    FROM sensor_data 
-    GROUP BY deviceId
-    ORDER BY lastSeen DESC
-  `;
+    const farmerId = req.headers['x-farmer-id'];
 
-    db.all(query, (err, rows) => {
-        if (err) {
-            console.error("❌ DB read error:", err);
-            return res.status(500).json({ error: "Database error" });
-        }
-        res.json(rows || []);
-    });
+    const runQuery = (deviceFilter) => {
+        const whereClause = deviceFilter.length > 0
+            ? `WHERE deviceId IN (${deviceFilter.map(() => '?').join(',')})`
+            : '';
+        const query = `
+        SELECT 
+          deviceId,
+          MIN(timestamp) as firstSeen,
+          MAX(timestamp) as lastSeen,
+          COUNT(*) as readingCount,
+          CASE 
+            WHEN datetime(MAX(timestamp)) >= datetime('now', '-5 minutes') THEN 'online'
+            WHEN datetime(MAX(timestamp)) >= datetime('now', '-1 hour') THEN 'recent'
+            ELSE 'offline'
+          END as status
+        FROM sensor_data 
+        ${whereClause}
+        GROUP BY deviceId
+        ORDER BY lastSeen DESC
+      `;
+        db.all(query, deviceFilter, (err, rows) => {
+            if (err) { console.error("❌ DB read error:", err); return res.status(500).json({ error: "Database error" }); }
+            res.json(rows || []);
+        });
+    };
+
+    if (farmerId) {
+        getFarmerDeviceIds(farmerId, (err, ids) => {
+            if (err) return res.status(500).json({ error: "DB error" });
+            runQuery(ids);
+        });
+    } else {
+        runQuery([]);
+    }
 });
 
 // Get device history (supports hours-based or start/end date range)
