@@ -189,9 +189,7 @@ db.run(`CREATE TABLE IF NOT EXISTS farmers (
     console.log("✅ Farmers table ready");
 
     // Migration: Add ref_code column if it doesn't exist (for existing tables)
-    db.run("ALTER TABLE farmers ADD COLUMN ref_code TEXT UNIQUE", (err) => {
-        // Ignore error if column already exists
-        
+    db.run("ALTER TABLE farmers ADD COLUMN ref_code TEXT UNIQUE", () => {
         // Populate existing farmers without ref_codes
         db.all("SELECT id FROM farmers WHERE ref_code IS NULL", (err, rows) => {
             if (!err && rows && rows.length > 0) {
@@ -200,6 +198,20 @@ db.run(`CREATE TABLE IF NOT EXISTS farmers (
                     db.run("UPDATE farmers SET ref_code = ? WHERE id = ?", [code, row.id]);
                 });
                 console.log(`✅ Generated ref_codes for ${rows.length} farmers`);
+            }
+        });
+    });
+
+    // Migration: Add settings column if it doesn't exist
+    db.run("ALTER TABLE farmers ADD COLUMN settings TEXT", () => {
+        // Initialize existing farmers with default settings if null
+        const defaultSettings = JSON.stringify(getDefaultConfig());
+        db.all("SELECT id FROM farmers WHERE settings IS NULL", (err, rows) => {
+            if (!err && rows && rows.length > 0) {
+                rows.forEach(row => {
+                    db.run("UPDATE farmers SET settings = ? WHERE id = ?", [defaultSettings, row.id]);
+                });
+                console.log(`✅ Initialized settings for ${rows.length} farmers`);
             }
         });
     });
@@ -330,11 +342,14 @@ app.post("/api/auth/register", (req, res) => {
     // Generate unique 6-digit numeric ref_code
     const refCode = Math.floor(100000 + Math.random() * 900000).toString();
     
+    // Default settings for new farmer
+    const defaultSettings = JSON.stringify(getDefaultConfig());
+    
     // Hash the PIN
     const hashedPin = bcrypt.hashSync(pin.trim(), 10);
     
-    db.run("INSERT INTO farmers (username, pin, role, ref_code) VALUES (?, ?, 'farmer', ?)",
-        [username.trim(), hashedPin, refCode],
+    db.run("INSERT INTO farmers (username, pin, role, ref_code, settings) VALUES (?, ?, 'farmer', ?, ?)",
+        [username.trim(), hashedPin, refCode, defaultSettings],
         function (err) {
             if (err) {
                 if (err.message.includes('UNIQUE')) return res.status(409).json({ error: "Username already exists" });
@@ -542,7 +557,24 @@ app.post("/api/data", apiKeyMiddleware, (req, res) => {
 
 
     if (parseFloat(spoilageRisk) >= 80 || grainHealth === "CRITICAL") {
-        sendFcmNotification("Critical Spoilage Alert", `Node ${deviceId || 'unknown'} has critical risk: ${parseFloat(spoilageRisk).toFixed(1)}%`);
+        // Find the farmer to check personalized alert threshold
+        db.get(`
+            SELECT f.settings, f.role FROM farmers f
+            JOIN node_assignments na ON na.farmer_id = f.id
+            WHERE na.deviceId = ?
+        `, [deviceId || "unknown"], (err, row) => {
+            let threshold = 80; // default
+            if (!err && row && row.settings) {
+                try {
+                    const settings = JSON.parse(row.settings);
+                    threshold = settings.alerts?.criticalRiskThreshold || 80;
+                } catch(e) {}
+            }
+            
+            if (parseFloat(spoilageRisk) >= threshold || grainHealth === "CRITICAL") {
+                sendFcmNotification("Silo Alert: " + deviceId, `Node ${deviceId} has critical risk: ${parseFloat(spoilageRisk).toFixed(1)}%`);
+            }
+        });
     }
 
     db.run(
@@ -592,6 +624,46 @@ app.post("/api/fcm-token", (req, res) => {
         }
         res.json({ success: true, message: "Token registered" });
     });
+});
+
+// GET farmer-specific configuration
+app.get("/api/farmer/config", farmerMiddleware, (req, res) => {
+    try {
+        const settings = req.farmer.settings ? JSON.parse(req.farmer.settings) : getDefaultConfig();
+        res.json(settings);
+    } catch (e) {
+        res.json(getDefaultConfig());
+    }
+});
+
+// PUT update farmer-specific configuration
+app.put("/api/farmer/config", farmerMiddleware, (req, res) => {
+    try {
+        const updates = req.body;
+        const currentSettings = req.farmer.settings ? JSON.parse(req.farmer.settings) : getDefaultConfig();
+        
+        // Deep merge the updates with current settings
+        const updatedConfig = deepMerge(currentSettings, updates);
+        
+        // Validate configuration
+        const validation = validateConfig(updatedConfig);
+        if (!validation.valid) {
+            return res.status(400).json({
+                error: "Invalid configuration",
+                details: validation.errors
+            });
+        }
+        
+        db.run("UPDATE farmers SET settings = ? WHERE id = ?", 
+            [JSON.stringify(updatedConfig), req.farmer.id], 
+            function(err) {
+                if (err) return res.status(500).json({ error: "Failed to save settings" });
+                res.json({ success: true, config: updatedConfig });
+            }
+        );
+    } catch (err) {
+        res.status(500).json({ error: "Internal server error", message: err.message });
+    }
 });
 
 app.get("/api/fcm-health", (req, res) => {
