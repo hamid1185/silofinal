@@ -99,7 +99,7 @@
   </div>
 
   <!-- Analytics Modal -->
-  <div id="analyticsModal" class="modal">
+  <div id="analyticsModal" class="modal" style="display: none;">
     <div class="modal-content">
       <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px;">
         <h3 style="font-size: 1.3rem; font-weight: 600; color: #f1f5f9;" id="modalTitle">Analytics</h3>
@@ -162,6 +162,10 @@
       setInterval(updateTimestamp, 1000);
 
       updateTimestamp();
+    } catch (e) {
+      console.error("Dashboard init failed:", e);
+      document.body.classList.remove('loading');
+    }
     }
 
     async function loadData() {
