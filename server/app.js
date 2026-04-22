@@ -182,69 +182,19 @@ db.run(`CREATE TABLE IF NOT EXISTS farmers (
   username TEXT UNIQUE NOT NULL,
   pin TEXT NOT NULL,
   role TEXT DEFAULT 'farmer',
-  ref_code TEXT UNIQUE,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-)`, (err) => {
+)`, async (err) => {
     if (err) { console.error("❌ Farmers table error:", err.message); return; }
     console.log("✅ Farmers table ready");
-
-    // Migration: Add ref_code column if it doesn't exist (for existing tables)
-    db.run("ALTER TABLE farmers ADD COLUMN ref_code TEXT UNIQUE", () => {
-        // Populate existing farmers without ref_codes
-        db.all("SELECT id FROM farmers WHERE ref_code IS NULL", (err, rows) => {
-            if (!err && rows && rows.length > 0) {
-                rows.forEach(row => {
-                    const code = Math.floor(100000 + Math.random() * 900000).toString();
-                    db.run("UPDATE farmers SET ref_code = ? WHERE id = ?", [code, row.id]);
-                });
-                console.log(`✅ Generated ref_codes for ${rows.length} farmers`);
-            }
-        });
-    });
-
-    // Migration: Add settings column if it doesn't exist
-    db.run("ALTER TABLE farmers ADD COLUMN settings TEXT", () => {
-        // Initialize existing farmers with default settings if null
-        const defaultSettings = JSON.stringify(getDefaultConfig());
-        db.all("SELECT id FROM farmers WHERE settings IS NULL", (err, rows) => {
-            if (!err && rows && rows.length > 0) {
-                rows.forEach(row => {
-                    db.run("UPDATE farmers SET settings = ? WHERE id = ?", [defaultSettings, row.id]);
-                });
-                console.log(`✅ Initialized settings for ${rows.length} farmers`);
-            }
-        });
-    });
-
-    // Seed default admin account if no farmers exist
-    db.get("SELECT COUNT(*) as cnt FROM farmers", (err, row) => {
+    db.get("SELECT COUNT(*) as cnt FROM farmers", async (err, row) => {
         if (!err && row.cnt === 0) {
-            const adminRef = Math.floor(100000 + Math.random() * 900000).toString();
-            const hashedPin = bcrypt.hashSync("0000", 10);
-            db.run("INSERT INTO farmers (username, pin, role, ref_code) VALUES (?, ?, ?, ?)",
-                ["admin", hashedPin, "admin", adminRef],
-                () => console.log(`✅ Default admin created (pin: 0000, ref: ${adminRef})`));
-        }
-    });
-
-    // Auto-migration for plain-text PINs
-    db.all("SELECT id, pin FROM farmers", (err, rows) => {
-        if (err || !rows) return;
-        let migrationCount = 0;
-        rows.forEach(row => {
-            // bcyrpt hashes start with $2a$ or $2b$
-            if (row.pin && !row.pin.startsWith('$2')) {
-                const hashed = bcrypt.hashSync(row.pin, 10);
-                db.run("UPDATE farmers SET pin = ? WHERE id = ?", [hashed, row.id]);
-                migrationCount++;
-            }
-        });
-        if (migrationCount > 0) {
-            console.log(`🔒 Migrated ${migrationCount} plain-text PINs to hashed versions`);
+            const hashedPin = await bcrypt.hash("0000", 10);
+            db.run("INSERT INTO farmers (username, pin, role) VALUES (?, ?, ?)",
+                ["admin", hashedPin, "admin"],
+                () => console.log("✅ Default admin created (pin: 0000)"));
         }
     });
 });
-
 
 db.run(`CREATE TABLE IF NOT EXISTS node_assignments (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -266,7 +216,7 @@ db.run("CREATE INDEX IF NOT EXISTS idx_timestamp ON sensor_data(timestamp)", (er
     if (err) console.error("Index error:", err.message);
 });
 
-// API key middleware (for ESP nodes)
+// API key middleware
 const apiKeyMiddleware = (req, res, next) => {
     const apiKey = req.headers['x-api-key'];
     if (!apiKey || apiKey !== "demo123") {
@@ -275,7 +225,7 @@ const apiKeyMiddleware = (req, res, next) => {
     next();
 };
 
-// Farmer auth middleware — resolves farmer from x-farmer-id header
+// Farmer auth middleware
 const farmerMiddleware = (req, res, next) => {
     const farmerId = req.headers['x-farmer-id'];
     if (!farmerId) return res.status(401).json({ error: "Not authenticated" });
@@ -299,13 +249,6 @@ const adminMiddleware = (req, res, next) => {
 
 // Helper: get deviceIds assigned to a farmer
 function getFarmerDeviceIds(farmerId, callback) {
-    if (farmerId === 'admin') {
-        // Admin with role check — get all
-        db.all("SELECT deviceId FROM node_assignments", (err, rows) => {
-            callback(err, rows ? rows.map(r => r.deviceId) : []);
-        });
-        return;
-    }
     db.get("SELECT role FROM farmers WHERE id = ?", [farmerId], (err, farmer) => {
         if (err || !farmer) return callback(err || new Error('Not found'), []);
         if (farmer.role === 'admin') {
@@ -333,84 +276,75 @@ function sendFcmNotification(title, body) {
     });
 }
 
+// ==========================================
+// AUTH & FARMER ROUTES
+// ==========================================
 
-// POST /api/auth/register
-app.post("/api/auth/register", (req, res) => {
+// POST /api/auth/register — public: register a new farmer
+app.post("/api/auth/register", async (req, res) => {
     const { username, pin } = req.body;
-    if (!username || !pin) return res.status(400).json({ error: "Username and PIN required" });
-    
-    // Generate unique 6-digit numeric ref_code
-    const refCode = Math.floor(100000 + Math.random() * 900000).toString();
-    
-    // Default settings for new farmer
-    const defaultSettings = JSON.stringify(getDefaultConfig());
-    
-    // Hash the PIN
-    const hashedPin = bcrypt.hashSync(pin.trim(), 10);
-    
-    db.run("INSERT INTO farmers (username, pin, role, ref_code, settings) VALUES (?, ?, 'farmer', ?, ?)",
-        [username.trim(), hashedPin, refCode, defaultSettings],
-        function (err) {
-            if (err) {
-                if (err.message.includes('UNIQUE')) return res.status(409).json({ error: "Username already exists" });
-                return res.status(500).json({ error: "DB error" });
+    if (!username || !pin || pin.length !== 4) return res.status(400).json({ error: "Username and 4-digit PIN required" });
+    try {
+        const hashedPin = await bcrypt.hash(pin.trim(), 10);
+        db.run("INSERT INTO farmers (username, pin, role) VALUES (?, ?, 'farmer')",
+            [username.trim(), hashedPin],
+            function (err) {
+                if (err) {
+                    if (err.message.includes('UNIQUE')) return res.status(409).json({ error: "Username already exists" });
+                    return res.status(500).json({ error: "Database error" });
+                }
+                res.json({ success: true, id: this.lastID, username: username.trim(), role: 'farmer' });
             }
-            res.json({ 
-                success: true, 
-                farmerId: this.lastID, 
-                username, 
-                refCode 
-            });
-        }
-    );
+        );
+    } catch (e) {
+        res.status(500).json({ error: "Error encrypting PIN" });
+    }
 });
-
 
 // POST /api/auth/login
 app.post("/api/auth/login", (req, res) => {
     const { username, pin } = req.body;
     if (!username || !pin) return res.status(400).json({ error: "Username and PIN required" });
-    db.get("SELECT * FROM farmers WHERE username = ?", [username.trim()], (err, row) => {
+    
+    db.get("SELECT * FROM farmers WHERE username = ?", [username.trim()], async (err, row) => {
         if (err || !row) return res.status(401).json({ error: "Invalid username or PIN" });
         
-        // Compare hashed PIN
-        const match = bcrypt.compareSync(pin.trim(), row.pin);
-        if (!match) return res.status(401).json({ error: "Invalid username or PIN" });
-
-        res.json({ 
-            success: true, 
-            farmerId: row.id, 
-            username: row.username, 
-            role: row.role,
-            refCode: row.ref_code 
-        });
+        const isMatch = await bcrypt.compare(pin.trim(), row.pin);
+        if (!isMatch) return res.status(401).json({ error: "Invalid username or PIN" });
+        
+        res.json({ success: true, farmerId: row.id, username: row.username, role: row.role });
     });
 });
 
 // GET /api/farmers — admin only
 app.get("/api/farmers", adminMiddleware, (req, res) => {
-    db.all("SELECT id, username, role, ref_code, created_at FROM farmers ORDER BY id ASC", (err, rows) => {
+    db.all("SELECT id, username, role, created_at FROM farmers ORDER BY id ASC", (err, rows) => {
         if (err) return res.status(500).json({ error: "DB error" });
         res.json(rows || []);
     });
 });
 
 // POST /api/farmers — admin only: create farmer
-app.post("/api/farmers", adminMiddleware, (req, res) => {
+app.post("/api/farmers", adminMiddleware, async (req, res) => {
     const { username, pin, role } = req.body;
     if (!username || !pin) return res.status(400).json({ error: "Username and PIN required" });
     const safeRole = role === 'admin' ? 'admin' : 'farmer';
-    const hashedPin = bcrypt.hashSync(pin.trim(), 10);
-    db.run("INSERT INTO farmers (username, pin, role) VALUES (?, ?, ?)",
-        [username.trim(), hashedPin, safeRole],
-        function (err) {
-            if (err) {
-                if (err.message.includes('UNIQUE')) return res.status(409).json({ error: "Username already exists" });
-                return res.status(500).json({ error: "DB error" });
+    
+    try {
+        const hashedPin = await bcrypt.hash(pin.trim(), 10);
+        db.run("INSERT INTO farmers (username, pin, role) VALUES (?, ?, ?)",
+            [username.trim(), hashedPin, safeRole],
+            function (err) {
+                if (err) {
+                    if (err.message.includes('UNIQUE')) return res.status(409).json({ error: "Username already exists" });
+                    return res.status(500).json({ error: "DB error" });
+                }
+                res.json({ success: true, id: this.lastID, username: username.trim(), role: safeRole });
             }
-            res.json({ success: true, id: this.lastID, username, role: safeRole });
-        }
-    );
+        );
+    } catch (e) {
+        res.status(500).json({ error: "Encryption error" });
+    }
 });
 
 // DELETE /api/farmers/:id — admin only
@@ -468,7 +402,6 @@ app.delete("/api/nodes/assign", adminMiddleware, (req, res) => {
 app.delete("/api/nodes/:deviceId", farmerMiddleware, (req, res) => {
     const { deviceId } = req.params;
     const farmer = req.farmer;
-
     const doDelete = () => {
         db.run("DELETE FROM node_assignments WHERE deviceId = ?", [deviceId], () => {
             db.run("DELETE FROM sensor_data WHERE deviceId = ?", [deviceId], function (err) {
@@ -478,7 +411,6 @@ app.delete("/api/nodes/:deviceId", farmerMiddleware, (req, res) => {
             });
         });
     };
-
     if (farmer.role === 'admin') {
         doDelete();
     } else {
@@ -541,40 +473,8 @@ app.post("/api/data", apiKeyMiddleware, (req, res) => {
 
     console.log(`📥 ${deviceId}: ${temperature}°C, ${humidity}%, Risk: ${spoilageRisk}%`);
 
-    // --- AUTO-ASSIGNMENT LOGIC ---
-    if (deviceId && deviceId.includes('_')) {
-        const prefix = deviceId.split('_')[0];
-        // Check if prefix is a valid ref_code
-        db.get("SELECT id FROM farmers WHERE ref_code = ?", [prefix], (err, farmer) => {
-            if (!err && farmer) {
-                // Farmer found. Ensure assignment exists (or update if reassigned)
-                db.run("DELETE FROM node_assignments WHERE deviceId = ?", [deviceId], () => {
-                   db.run("INSERT INTO node_assignments (deviceId, farmer_id) VALUES (?, ?)", [deviceId, farmer.id]);
-                });
-            }
-        });
-    }
-
-
     if (parseFloat(spoilageRisk) >= 80 || grainHealth === "CRITICAL") {
-        // Find the farmer to check personalized alert threshold
-        db.get(`
-            SELECT f.settings, f.role FROM farmers f
-            JOIN node_assignments na ON na.farmer_id = f.id
-            WHERE na.deviceId = ?
-        `, [deviceId || "unknown"], (err, row) => {
-            let threshold = 80; // default
-            if (!err && row && row.settings) {
-                try {
-                    const settings = JSON.parse(row.settings);
-                    threshold = settings.alerts?.criticalRiskThreshold || 80;
-                } catch(e) {}
-            }
-            
-            if (parseFloat(spoilageRisk) >= threshold || grainHealth === "CRITICAL") {
-                sendFcmNotification("Silo Alert: " + deviceId, `Node ${deviceId} has critical risk: ${parseFloat(spoilageRisk).toFixed(1)}%`);
-            }
-        });
+        sendFcmNotification("Critical Spoilage Alert", `Node ${deviceId || 'unknown'} has critical risk: ${parseFloat(spoilageRisk).toFixed(1)}%`);
     }
 
     db.run(
@@ -626,46 +526,6 @@ app.post("/api/fcm-token", (req, res) => {
     });
 });
 
-// GET farmer-specific configuration
-app.get("/api/farmer/config", farmerMiddleware, (req, res) => {
-    try {
-        const settings = req.farmer.settings ? JSON.parse(req.farmer.settings) : getDefaultConfig();
-        res.json(settings);
-    } catch (e) {
-        res.json(getDefaultConfig());
-    }
-});
-
-// PUT update farmer-specific configuration
-app.put("/api/farmer/config", farmerMiddleware, (req, res) => {
-    try {
-        const updates = req.body;
-        const currentSettings = req.farmer.settings ? JSON.parse(req.farmer.settings) : getDefaultConfig();
-        
-        // Deep merge the updates with current settings
-        const updatedConfig = deepMerge(currentSettings, updates);
-        
-        // Validate configuration
-        const validation = validateConfig(updatedConfig);
-        if (!validation.valid) {
-            return res.status(400).json({
-                error: "Invalid configuration",
-                details: validation.errors
-            });
-        }
-        
-        db.run("UPDATE farmers SET settings = ? WHERE id = ?", 
-            [JSON.stringify(updatedConfig), req.farmer.id], 
-            function(err) {
-                if (err) return res.status(500).json({ error: "Failed to save settings" });
-                res.json({ success: true, config: updatedConfig });
-            }
-        );
-    } catch (err) {
-        res.status(500).json({ error: "Internal server error", message: err.message });
-    }
-});
-
 app.get("/api/fcm-health", (req, res) => {
     db.all("SELECT * FROM fcm_tokens", (err, rows) => {
         res.json({
@@ -680,25 +540,27 @@ app.get("/api/fcm-health", (req, res) => {
 // Get latest readings from all devices (filtered by farmer if x-farmer-id provided)
 app.get("/api/latest", (req, res) => {
     const farmerId = req.headers['x-farmer-id'];
-
     const runQuery = (deviceFilter) => {
-        let query = `
-        SELECT s1.*
-        FROM sensor_data s1
-        INNER JOIN (
-          SELECT deviceId, MAX(timestamp) as latest 
-          FROM sensor_data
-          ${deviceFilter.length > 0 ? `WHERE deviceId IN (${deviceFilter.map(() => '?').join(',')})` : ''}
-          GROUP BY deviceId
-        ) s2 ON s1.deviceId = s2.deviceId AND s1.timestamp = s2.latest
-        ORDER BY s1.deviceId
-      `;
-        db.all(query, deviceFilter, (err, rows) => {
+        const whereClause = deviceFilter.length > 0
+            ? `WHERE s1.deviceId IN (${deviceFilter.map(() => '?').join(',')})`
+            : '';
+        const query = `
+          SELECT s1.*
+          FROM sensor_data s1
+          INNER JOIN (
+            SELECT deviceId, MAX(timestamp) as latest
+            FROM sensor_data
+            ${deviceFilter.length > 0 ? `WHERE deviceId IN (${deviceFilter.map(() => '?').join(',')})` : ''}
+            GROUP BY deviceId
+          ) s2 ON s1.deviceId = s2.deviceId AND s1.timestamp = s2.latest
+          ORDER BY s1.deviceId
+        `;
+        const params = deviceFilter.length > 0 ? [...deviceFilter, ...deviceFilter] : [];
+        db.all(query, params, (err, rows) => {
             if (err) { console.error("❌ DB read error:", err); return res.status(500).json({ error: "Database error" }); }
             res.json(rows || []);
         });
     };
-
     if (farmerId) {
         getFarmerDeviceIds(farmerId, (err, ids) => {
             if (err) return res.status(500).json({ error: "DB error" });
@@ -879,44 +741,31 @@ function validateConfig(config) {
 
 
 
-// Get device list with status (filtered by farmer if x-farmer-id provided)
+// Get device list with status
 app.get("/api/devices", (req, res) => {
-    const farmerId = req.headers['x-farmer-id'];
+    const query = `
+    SELECT 
+      deviceId,
+      MIN(timestamp) as firstSeen,
+      MAX(timestamp) as lastSeen,
+      COUNT(*) as readingCount,
+      CASE 
+        WHEN datetime(MAX(timestamp)) >= datetime('now', '-5 minutes') THEN 'online'
+        WHEN datetime(MAX(timestamp)) >= datetime('now', '-1 hour') THEN 'recent'
+        ELSE 'offline'
+      END as status
+    FROM sensor_data 
+    GROUP BY deviceId
+    ORDER BY lastSeen DESC
+  `;
 
-    const runQuery = (deviceFilter) => {
-        const whereClause = deviceFilter.length > 0
-            ? `WHERE deviceId IN (${deviceFilter.map(() => '?').join(',')})`
-            : '';
-        const query = `
-        SELECT 
-          deviceId,
-          MIN(timestamp) as firstSeen,
-          MAX(timestamp) as lastSeen,
-          COUNT(*) as readingCount,
-          CASE 
-            WHEN datetime(MAX(timestamp)) >= datetime('now', '-5 minutes') THEN 'online'
-            WHEN datetime(MAX(timestamp)) >= datetime('now', '-1 hour') THEN 'recent'
-            ELSE 'offline'
-          END as status
-        FROM sensor_data 
-        ${whereClause}
-        GROUP BY deviceId
-        ORDER BY lastSeen DESC
-      `;
-        db.all(query, deviceFilter, (err, rows) => {
-            if (err) { console.error("❌ DB read error:", err); return res.status(500).json({ error: "Database error" }); }
-            res.json(rows || []);
-        });
-    };
-
-    if (farmerId) {
-        getFarmerDeviceIds(farmerId, (err, ids) => {
-            if (err) return res.status(500).json({ error: "DB error" });
-            runQuery(ids);
-        });
-    } else {
-        runQuery([]);
-    }
+    db.all(query, (err, rows) => {
+        if (err) {
+            console.error("❌ DB read error:", err);
+            return res.status(500).json({ error: "Database error" });
+        }
+        res.json(rows || []);
+    });
 });
 
 // Get device history (supports hours-based or start/end date range)
