@@ -1506,26 +1506,27 @@ function generateDetailedSummary(latest, trends, changes, thresholds = CONFIG.th
     }
 
 
-    // Health check
-    app.get("/health", (req, res) => {
-        res.json({
-            status: "healthy",
-            timestamp: new Date().toISOString(),
-            uptime: process.uptime()
-        });
-    });
 
-    // Serve dashboard
-    app.get("/", (req, res) => {
-        res.sendFile(path.join(__dirname, "public", "index.html"));
-    });
-
-    // Start server
-    app.listen(PORT, '0.0.0.0', () => {
-        console.log(`🚀 Advanced Silo Monitor Server running at http://localhost:${PORT}`);
-        console.log(`📊 Dashboard: http://localhost:${PORT}`);
-        console.log(`🔧 API Health: http://localhost:${PORT}/health`);
-        console.log(`📈 Advanced Analytics: http://localhost:${PORT}/api/trends/:deviceId`);
-    });
 }
 
+// Health check
+app.get("/health", (req, res) => {
+    res.json({
+        status: "healthy",
+        timestamp: new Date().toISOString(),
+        uptime: process.uptime()
+    });
+});
+
+// Serve dashboard
+app.get("/", (req, res) => {
+    res.sendFile(path.join(__dirname, "public", "index.html"));
+});
+
+// Start server
+app.listen(PORT, '0.0.0.0', () => {
+    console.log(`🚀 Advanced Silo Monitor Server running at http://localhost:${PORT}`);
+    console.log(`📊 Dashboard: http://localhost:${PORT}`);
+    console.log(`🔧 API Health: http://localhost:${PORT}/health`);
+    console.log(`📈 Advanced Analytics: http://localhost:${PORT}/api/trends/:deviceId`);
+});
