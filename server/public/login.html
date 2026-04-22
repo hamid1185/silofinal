@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -7,7 +8,13 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    *,
+    *::before,
+    *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
 
     :root {
       --bg: #0a0f1e;
@@ -40,8 +47,8 @@
       position: fixed;
       inset: 0;
       background:
-        radial-gradient(ellipse 60% 50% at 30% 40%, rgba(59,130,246,0.12) 0%, transparent 70%),
-        radial-gradient(ellipse 50% 60% at 70% 70%, rgba(16,185,129,0.08) 0%, transparent 70%);
+        radial-gradient(ellipse 60% 50% at 30% 40%, rgba(59, 130, 246, 0.12) 0%, transparent 70%),
+        radial-gradient(ellipse 50% 60% at 70% 70%, rgba(16, 185, 129, 0.08) 0%, transparent 70%);
       pointer-events: none;
     }
 
@@ -52,14 +59,21 @@
       padding: 48px 40px;
       width: 100%;
       max-width: 400px;
-      box-shadow: 0 24px 60px rgba(0,0,0,0.5), 0 0 0 1px rgba(59,130,246,0.08);
+      box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(59, 130, 246, 0.08);
       position: relative;
       animation: fadeUp 0.4s ease;
     }
 
     @keyframes fadeUp {
-      from { opacity: 0; transform: translateY(20px); }
-      to { opacity: 1; transform: translateY(0); }
+      from {
+        opacity: 0;
+        transform: translateY(20px);
+      }
+
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
     }
 
     .logo {
@@ -70,31 +84,53 @@
     }
 
     .logo-icon {
-      width: 44px; height: 44px;
+      width: 44px;
+      height: 44px;
       background: linear-gradient(135deg, #3b82f6, #10b981);
       border-radius: 12px;
-      display: flex; align-items: center; justify-content: center;
+      display: flex;
+      align-items: center;
+      justify-content: center;
       font-size: 1.4rem;
-      box-shadow: 0 4px 16px rgba(59,130,246,0.3);
+      box-shadow: 0 4px 16px rgba(59, 130, 246, 0.3);
     }
 
-    .logo-text { font-size: 1.2rem; font-weight: 700; color: var(--text); letter-spacing: -0.3px; }
-    .logo-sub { font-size: 0.75rem; color: var(--muted); margin-top: 1px; }
+    .logo-text {
+      font-size: 1.2rem;
+      font-weight: 700;
+      color: var(--text);
+      letter-spacing: -0.3px;
+    }
+
+    .logo-sub {
+      font-size: 0.75rem;
+      color: var(--muted);
+      margin-top: 1px;
+    }
 
     h2 {
-      font-size: 1.5rem; font-weight: 700;
+      font-size: 1.5rem;
+      font-weight: 700;
       margin-bottom: 6px;
       background: linear-gradient(135deg, #f1f5f9, #94a3b8);
-      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
     }
 
-    .subtitle { font-size: 0.85rem; color: var(--muted); margin-bottom: 32px; }
+    .subtitle {
+      font-size: 0.85rem;
+      color: var(--muted);
+      margin-bottom: 32px;
+    }
 
-    .field { margin-bottom: 20px; }
+    .field {
+      margin-bottom: 20px;
+    }
 
     label {
       display: block;
-      font-size: 0.78rem; font-weight: 600;
+      font-size: 0.78rem;
+      font-weight: 600;
       color: var(--subtle);
       text-transform: uppercase;
       letter-spacing: 0.8px;
@@ -116,7 +152,7 @@
 
     input:focus {
       border-color: var(--accent);
-      box-shadow: 0 0 0 3px rgba(59,130,246,0.15);
+      box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
     }
 
     /* PIN dots styling */
@@ -142,15 +178,31 @@
       overflow: hidden;
     }
 
-    .btn:hover { opacity: 0.92; transform: translateY(-1px); }
-    .btn:active { transform: translateY(0); }
-    .btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+    .btn:hover {
+      opacity: 0.92;
+      transform: translateY(-1px);
+    }
 
-    .btn-inner { display: flex; align-items: center; justify-content: center; gap: 8px; }
+    .btn:active {
+      transform: translateY(0);
+    }
+
+    .btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    .btn-inner {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+    }
 
     .error {
-      background: rgba(239,68,68,0.1);
-      border: 1px solid rgba(239,68,68,0.3);
+      background: rgba(239, 68, 68, 0.1);
+      border: 1px solid rgba(239, 68, 68, 0.3);
       color: #fca5a5;
       border-radius: 8px;
       padding: 10px 14px;
@@ -161,21 +213,36 @@
     }
 
     @keyframes shake {
-      0%, 100% { transform: translateX(0); }
-      25% { transform: translateX(-6px); }
-      75% { transform: translateX(6px); }
+
+      0%,
+      100% {
+        transform: translateX(0);
+      }
+
+      25% {
+        transform: translateX(-6px);
+      }
+
+      75% {
+        transform: translateX(6px);
+      }
     }
 
     .spinner {
-      width: 16px; height: 16px;
-      border: 2px solid rgba(255,255,255,0.3);
+      width: 16px;
+      height: 16px;
+      border: 2px solid rgba(255, 255, 255, 0.3);
       border-top-color: white;
       border-radius: 50%;
       animation: spin 0.6s linear infinite;
       display: none;
     }
 
-    @keyframes spin { to { transform: rotate(360deg); } }
+    @keyframes spin {
+      to {
+        transform: rotate(360deg);
+      }
+    }
 
     .hint {
       text-align: center;
@@ -184,9 +251,12 @@
       color: var(--muted);
     }
 
-    .hint strong { color: var(--subtle); }
+    .hint strong {
+      color: var(--subtle);
+    }
   </style>
 </head>
+
 <body>
   <div class="card">
     <div class="logo">
@@ -260,8 +330,6 @@
           username: data.username,
           role: data.role
         }));
-
-        // Redirect to dashboard
         window.location.href = '/';
       } catch (err) {
         errorMsg.textContent = err.message;
@@ -273,4 +341,5 @@
     }
   </script>
 </body>
+
 </html>
