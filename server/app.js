@@ -207,6 +207,33 @@ db.run(`CREATE TABLE IF NOT EXISTS node_assignments (
     else console.log("✅ Node assignments table ready");
 });
 
+// Migration: add reference_code column to farmers (ignore if already exists)
+db.run("ALTER TABLE farmers ADD COLUMN reference_code TEXT", (err) => {
+    if (err && !err.message.includes('duplicate column')) {
+        console.error("❌ Migration error:", err.message);
+    } else {
+        // Backfill any farmers missing a reference code
+        db.all("SELECT id FROM farmers WHERE reference_code IS NULL", (e, rows) => {
+            if (e || !rows || !rows.length) return;
+            rows.forEach(row => {
+                const code = String(Math.floor(100000 + Math.random() * 900000));
+                db.run("UPDATE farmers SET reference_code = ? WHERE id = ? AND reference_code IS NULL", [code, row.id]);
+            });
+            console.log(`✅ Backfilled ${rows.length} farmer reference code(s)`);
+        });
+    }
+});
+
+db.run(`CREATE TABLE IF NOT EXISTS farmer_configs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  farmer_id INTEGER UNIQUE NOT NULL,
+  config TEXT NOT NULL,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+)`, (err) => {
+    if (err) console.error("❌ farmer_configs table error:", err.message);
+    else console.log("✅ Farmer configs table ready");
+});
+
 // Create indexes
 db.run("CREATE INDEX IF NOT EXISTS idx_deviceId ON sensor_data(deviceId)", (err) => {
     if (err) console.error("Index error:", err.message);
@@ -280,24 +307,40 @@ function sendFcmNotification(title, body) {
 // AUTH & FARMER ROUTES
 // ==========================================
 
+// Generate a unique 6-digit reference code
+async function generateRefCode() {
+    return new Promise((resolve, reject) => {
+        const tryCode = () => {
+            const code = String(Math.floor(100000 + Math.random() * 900000));
+            db.get("SELECT id FROM farmers WHERE reference_code = ?", [code], (err, row) => {
+                if (err) return reject(err);
+                if (row) return tryCode(); // collision, retry
+                resolve(code);
+            });
+        };
+        tryCode();
+    });
+}
+
 // POST /api/auth/register — public: register a new farmer
 app.post("/api/auth/register", async (req, res) => {
     const { username, pin } = req.body;
     if (!username || !pin || pin.length !== 4) return res.status(400).json({ error: "Username and 4-digit PIN required" });
     try {
         const hashedPin = await bcrypt.hash(pin.trim(), 10);
-        db.run("INSERT INTO farmers (username, pin, role) VALUES (?, ?, 'farmer')",
-            [username.trim(), hashedPin],
+        const refCode = await generateRefCode();
+        db.run("INSERT INTO farmers (username, pin, role, reference_code) VALUES (?, ?, 'farmer', ?)",
+            [username.trim(), hashedPin, refCode],
             function (err) {
                 if (err) {
                     if (err.message.includes('UNIQUE')) return res.status(409).json({ error: "Username already exists" });
                     return res.status(500).json({ error: "Database error" });
                 }
-                res.json({ success: true, id: this.lastID, username: username.trim(), role: 'farmer' });
+                res.json({ success: true, id: this.lastID, username: username.trim(), role: 'farmer', reference_code: refCode });
             }
         );
     } catch (e) {
-        res.status(500).json({ error: "Error encrypting PIN" });
+        res.status(500).json({ error: "Error creating account" });
     }
 });
 
@@ -305,14 +348,14 @@ app.post("/api/auth/register", async (req, res) => {
 app.post("/api/auth/login", (req, res) => {
     const { username, pin } = req.body;
     if (!username || !pin) return res.status(400).json({ error: "Username and PIN required" });
-    
+
     db.get("SELECT * FROM farmers WHERE username = ?", [username.trim()], async (err, row) => {
         if (err || !row) return res.status(401).json({ error: "Invalid username or PIN" });
-        
+
         const isMatch = await bcrypt.compare(pin.trim(), row.pin);
         if (!isMatch) return res.status(401).json({ error: "Invalid username or PIN" });
-        
-        res.json({ success: true, farmerId: row.id, username: row.username, role: row.role });
+
+        res.json({ success: true, farmerId: row.id, username: row.username, role: row.role, reference_code: row.reference_code });
     });
 });
 
@@ -329,7 +372,7 @@ app.post("/api/farmers", adminMiddleware, async (req, res) => {
     const { username, pin, role } = req.body;
     if (!username || !pin) return res.status(400).json({ error: "Username and PIN required" });
     const safeRole = role === 'admin' ? 'admin' : 'farmer';
-    
+
     try {
         const hashedPin = await bcrypt.hash(pin.trim(), 10);
         db.run("INSERT INTO farmers (username, pin, role) VALUES (?, ?, ?)",
@@ -504,11 +547,21 @@ app.post("/api/data", apiKeyMiddleware, (req, res) => {
                 console.error("❌ DB insert error:", err);
                 return res.status(500).json({ error: "Database error" });
             }
-            res.json({
-                success: true,
-                id: this.lastID,
-                message: "Data received successfully"
-            });
+            // Auto-assign node to farmer by parsing REFCODE_ prefix from deviceId
+            const prefixMatch = (deviceId || '').match(/^(\d{6})_/);
+            if (prefixMatch) {
+                const refCode = prefixMatch[1];
+                db.get("SELECT id FROM farmers WHERE reference_code = ?", [refCode], (e, farmer) => {
+                    if (!e && farmer) {
+                        db.run(
+                            "INSERT OR IGNORE INTO node_assignments (deviceId, farmer_id) VALUES (?, ?)",
+                            [deviceId, farmer.id],
+                            (e2) => { if (!e2) console.log(`🔗 Auto-assigned ${deviceId} → farmer ${farmer.id}`); }
+                        );
+                    }
+                });
+            }
+            res.json({ success: true, id: this.lastID, message: "Data received successfully" });
         }
     );
 });
@@ -573,49 +626,57 @@ app.get("/api/latest", (req, res) => {
 
 
 // Configuration API Endpoints
-// GET current configuration
+// GET current configuration (farmer-scoped if x-farmer-id header present)
 app.get("/api/config", (req, res) => {
-    res.json(CONFIG);
+    const farmerId = req.headers['x-farmer-id'];
+    if (farmerId) {
+        db.get("SELECT config FROM farmer_configs WHERE farmer_id = ?", [farmerId], (err, row) => {
+            if (!err && row) {
+                try { return res.json(JSON.parse(row.config)); } catch (e) {}
+            }
+            res.json(CONFIG); // fall back to global
+        });
+    } else {
+        res.json(CONFIG);
+    }
 });
 
-// PUT update configuration (partial or full)
+// PUT update configuration (farmer-scoped if x-farmer-id header present, else global)
 app.put("/api/config", (req, res) => {
+    const farmerId = req.headers['x-farmer-id'];
     try {
         const updates = req.body;
-
-        // Deep merge the updates with existing config
-        const updatedConfig = deepMerge(CONFIG, updates);
-
-        // Validate configuration
-        const validation = validateConfig(updatedConfig);
-        if (!validation.valid) {
-            return res.status(400).json({
-                error: "Invalid configuration",
-                details: validation.errors
-            });
-        }
-
-        // Save to file
-        if (saveConfig(updatedConfig)) {
-            // Update THRESHOLDS reference for backward compatibility
-            Object.assign(THRESHOLDS, updatedConfig.thresholds);
-
-            res.json({
-                success: true,
-                message: "Configuration updated successfully",
-                config: updatedConfig
+        if (farmerId) {
+            // Per-farmer config: load existing, deep-merge, save to farmer_configs
+            db.get("SELECT config FROM farmer_configs WHERE farmer_id = ?", [farmerId], (err, row) => {
+                const base = (row && !err) ? (() => { try { return JSON.parse(row.config); } catch(e) { return CONFIG; } })() : CONFIG;
+                const merged = deepMerge(base, updates);
+                const json = JSON.stringify(merged);
+                db.run(
+                    `INSERT INTO farmer_configs (farmer_id, config) VALUES (?, ?)
+                     ON CONFLICT(farmer_id) DO UPDATE SET config = excluded.config, updated_at = CURRENT_TIMESTAMP`,
+                    [farmerId, json],
+                    (e2) => {
+                        if (e2) return res.status(500).json({ error: "Failed to save config" });
+                        res.json({ success: true, message: "Thresholds saved", config: merged });
+                    }
+                );
             });
         } else {
-            res.status(500).json({
-                error: "Failed to save configuration"
-            });
+            // Global config (admin/legacy)
+            const updatedConfig = deepMerge(CONFIG, updates);
+            const validation = validateConfig(updatedConfig);
+            if (!validation.valid) return res.status(400).json({ error: "Invalid configuration", details: validation.errors });
+            if (saveConfig(updatedConfig)) {
+                Object.assign(THRESHOLDS, updatedConfig.thresholds);
+                res.json({ success: true, message: "Configuration updated successfully", config: updatedConfig });
+            } else {
+                res.status(500).json({ error: "Failed to save configuration" });
+            }
         }
     } catch (err) {
         console.error("❌ Config update error:", err);
-        res.status(500).json({
-            error: "Internal server error",
-            message: err.message
-        });
+        res.status(500).json({ error: "Internal server error", message: err.message });
     }
 });
 
