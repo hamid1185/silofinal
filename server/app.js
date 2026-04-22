@@ -182,12 +182,33 @@ db.run(`CREATE TABLE IF NOT EXISTS farmers (
   username TEXT UNIQUE NOT NULL,
   pin TEXT NOT NULL,
   role TEXT DEFAULT 'farmer',
+  reference_code TEXT,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 )`, async (err) => {
     if (err) { console.error("❌ Farmers table error:", err.message); return; }
     console.log("✅ Farmers table ready");
-    db.get("SELECT COUNT(*) as cnt FROM farmers", async (err, row) => {
-        if (!err && row.cnt === 0) {
+
+    // Migration: add reference_code column if not exists (safe — table is confirmed to exist here)
+    db.run("ALTER TABLE farmers ADD COLUMN reference_code TEXT", (mErr) => {
+        if (mErr && !mErr.message.includes('duplicate column')) {
+            console.error("❌ Migration error:", mErr.message);
+        } else {
+            // Backfill existing farmers missing a reference code
+            db.all("SELECT id FROM farmers WHERE reference_code IS NULL", (e, rows) => {
+                if (!e && rows && rows.length) {
+                    rows.forEach(row => {
+                        const code = String(Math.floor(100000 + Math.random() * 900000));
+                        db.run("UPDATE farmers SET reference_code = ? WHERE id = ? AND reference_code IS NULL", [code, row.id]);
+                    });
+                    console.log(`✅ Backfilled ${rows.length} farmer reference code(s)`);
+                }
+            });
+        }
+    });
+
+    // Seed default admin if table is empty
+    db.get("SELECT COUNT(*) as cnt FROM farmers", async (e2, row) => {
+        if (!e2 && row.cnt === 0) {
             const hashedPin = await bcrypt.hash("0000", 10);
             db.run("INSERT INTO farmers (username, pin, role) VALUES (?, ?, ?)",
                 ["admin", hashedPin, "admin"],
@@ -205,23 +226,6 @@ db.run(`CREATE TABLE IF NOT EXISTS node_assignments (
 )`, (err) => {
     if (err) console.error("❌ Node assignments table error:", err.message);
     else console.log("✅ Node assignments table ready");
-});
-
-// Migration: add reference_code column to farmers (ignore if already exists)
-db.run("ALTER TABLE farmers ADD COLUMN reference_code TEXT", (err) => {
-    if (err && !err.message.includes('duplicate column')) {
-        console.error("❌ Migration error:", err.message);
-    } else {
-        // Backfill any farmers missing a reference code
-        db.all("SELECT id FROM farmers WHERE reference_code IS NULL", (e, rows) => {
-            if (e || !rows || !rows.length) return;
-            rows.forEach(row => {
-                const code = String(Math.floor(100000 + Math.random() * 900000));
-                db.run("UPDATE farmers SET reference_code = ? WHERE id = ? AND reference_code IS NULL", [code, row.id]);
-            });
-            console.log(`✅ Backfilled ${rows.length} farmer reference code(s)`);
-        });
-    }
 });
 
 db.run(`CREATE TABLE IF NOT EXISTS farmer_configs (
@@ -608,7 +612,7 @@ app.get("/api/latest", (req, res) => {
           ) s2 ON s1.deviceId = s2.deviceId AND s1.timestamp = s2.latest
           ORDER BY s1.deviceId
         `;
-        const params = deviceFilter.length > 0 ? [...deviceFilter, ...deviceFilter] : [];
+        const params = deviceFilter.length > 0 ? [...deviceFilter] : [];
         db.all(query, params, (err, rows) => {
             if (err) { console.error("❌ DB read error:", err); return res.status(500).json({ error: "Database error" }); }
             res.json(rows || []);
@@ -617,6 +621,7 @@ app.get("/api/latest", (req, res) => {
     if (farmerId) {
         getFarmerDeviceIds(farmerId, (err, ids) => {
             if (err) return res.status(500).json({ error: "DB error" });
+            if (ids.length === 0) return res.json([]);
             runQuery(ids);
         });
     } else {
@@ -632,7 +637,7 @@ app.get("/api/config", (req, res) => {
     if (farmerId) {
         db.get("SELECT config FROM farmer_configs WHERE farmer_id = ?", [farmerId], (err, row) => {
             if (!err && row) {
-                try { return res.json(JSON.parse(row.config)); } catch (e) {}
+                try { return res.json(JSON.parse(row.config)); } catch (e) { }
             }
             res.json(CONFIG); // fall back to global
         });
@@ -649,7 +654,7 @@ app.put("/api/config", (req, res) => {
         if (farmerId) {
             // Per-farmer config: load existing, deep-merge, save to farmer_configs
             db.get("SELECT config FROM farmer_configs WHERE farmer_id = ?", [farmerId], (err, row) => {
-                const base = (row && !err) ? (() => { try { return JSON.parse(row.config); } catch(e) { return CONFIG; } })() : CONFIG;
+                const base = (row && !err) ? (() => { try { return JSON.parse(row.config); } catch (e) { return CONFIG; } })() : CONFIG;
                 const merged = deepMerge(base, updates);
                 const json = JSON.stringify(merged);
                 db.run(
@@ -804,29 +809,48 @@ function validateConfig(config) {
 
 // Get device list with status
 app.get("/api/devices", (req, res) => {
-    const query = `
-    SELECT 
-      deviceId,
-      MIN(timestamp) as firstSeen,
-      MAX(timestamp) as lastSeen,
-      COUNT(*) as readingCount,
-      CASE 
-        WHEN datetime(MAX(timestamp)) >= datetime('now', '-5 minutes') THEN 'online'
-        WHEN datetime(MAX(timestamp)) >= datetime('now', '-1 hour') THEN 'recent'
-        ELSE 'offline'
-      END as status
-    FROM sensor_data 
-    GROUP BY deviceId
-    ORDER BY lastSeen DESC
-  `;
+    const farmerId = req.headers['x-farmer-id'];
+    
+    const runQuery = (deviceFilter) => {
+        const whereClause = deviceFilter.length > 0 
+            ? `WHERE deviceId IN (${deviceFilter.map(() => '?').join(',')})`
+            : '';
+            
+        const query = `
+        SELECT 
+          deviceId,
+          MIN(timestamp) as firstSeen,
+          MAX(timestamp) as lastSeen,
+          COUNT(*) as readingCount,
+          CASE 
+            WHEN datetime(MAX(timestamp)) >= datetime('now', '-5 minutes') THEN 'online'
+            WHEN datetime(MAX(timestamp)) >= datetime('now', '-1 hour') THEN 'recent'
+            ELSE 'offline'
+          END as status
+        FROM sensor_data 
+        ${whereClause}
+        GROUP BY deviceId
+        ORDER BY lastSeen DESC
+      `;
+    
+        db.all(query, deviceFilter, (err, rows) => {
+            if (err) {
+                console.error("❌ DB read error:", err);
+                return res.status(500).json({ error: "Database error" });
+            }
+            res.json(rows || []);
+        });
+    };
 
-    db.all(query, (err, rows) => {
-        if (err) {
-            console.error("❌ DB read error:", err);
-            return res.status(500).json({ error: "Database error" });
-        }
-        res.json(rows || []);
-    });
+    if (farmerId) {
+        getFarmerDeviceIds(farmerId, (err, ids) => {
+            if (err) return res.status(500).json({ error: "DB error" });
+            if (ids.length === 0) return res.json([]);
+            runQuery(ids);
+        });
+    } else {
+        runQuery([]);
+    }
 });
 
 // Get device history (supports hours-based or start/end date range)
