@@ -1185,21 +1185,21 @@ function generateDetailedSummary(latest, trends, changes, thresholds = CONFIG.th
     }
 
     // Air quality analysis
-    const airQualityThresholds = thresholds.airQuality;
-    if (mq > airQualityThresholds.poor) {
-        summaries.push(`☣️ POOR AIR QUALITY: MQ135 reading (${mq.toFixed(0)}) is elevated.`);
+    const airQuality = thresholds.airQuality;
+    if (mq > airQuality.poor) {
+        summaries.push(`☣️ POOR AIR QUALITY: MQ135 reading ${mq.toFixed(0)} indicates elevated gas levels.`);
     }
 
     // Dew point analysis
-    const condensationThreshold = thresholds.condensation?.dewPointDifference || 2;
+    const condensationThreshold = THRESHOLDS.condensation.dewPointDifference;
     if (latest.dewPoint && (temp - latest.dewPoint) < condensationThreshold) {
         summaries.push(`💧 CONDENSATION RISK: Temperature-dew point difference is ${(temp - latest.dewPoint).toFixed(1)}°C (<${condensationThreshold}°C threshold).`);
     }
 
     // Trend analysis
-    const riskTrendValue = trends.spoilageRisk?.value || 'STABLE';
-    if (riskTrendValue.includes('RISING')) {
-        summaries.push(`📈 RISK TRENDING UPWARD: Spoilage risk is ${riskTrendValue.toLowerCase().replace('_', ' ')}.`);
+    const riskTrend = trends.spoilageRisk?.value || 'STABLE';
+    if (riskTrend.includes('RISING')) {
+        summaries.push(`📈 RISK TRENDING UPWARD: Spoilage risk is ${riskTrend.toLowerCase().replace('_', ' ')}.`);
     }
 
     return summaries;
@@ -1532,14 +1532,6 @@ function detectAcceleratingTrend(data) {
     const secondTrend = calculateSimpleTrend(secondHalf);
 
     return Math.abs(secondTrend) > Math.abs(firstTrend) * 1.5;
-}
-
-function detectSpike(data, threshold) {
-    if (data.length < 2) return false;
-    const last = data[data.length - 1];
-    const prev = data[data.length - 2];
-    // A spike is a sudden increase greater than the threshold
-    return (last - prev) > threshold;
 }
 
 
