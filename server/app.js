@@ -527,25 +527,44 @@ app.get("/api/nodes/unassigned", adminMiddleware, (req, res) => {
 // GET all data (for history page)
 app.get("/api/data", (req, res) => {
     const { deviceId, limit = 1000 } = req.query;
+    const farmerId = req.headers['x-farmer-id'];
 
-    let query = "SELECT * FROM sensor_data";
-    let params = [];
+    const runQuery = (deviceFilter) => {
+        let query = "SELECT * FROM sensor_data";
+        let params = [];
 
-    if (deviceId) {
-        query += " WHERE deviceId = ?";
-        params.push(deviceId);
-    }
-
-    query += " ORDER BY timestamp DESC LIMIT ?";
-    params.push(parseInt(limit));
-
-    db.all(query, params, (err, rows) => {
-        if (err) {
-            console.error("❌ Error fetching data:", err);
-            return res.status(500).json({ error: "Database error" });
+        if (deviceId) {
+            if (deviceFilter.length > 0 && !deviceFilter.includes(deviceId)) {
+                return res.json([]); // Requested device doesn't belong to farmer
+            }
+            query += " WHERE deviceId = ?";
+            params.push(deviceId);
+        } else if (deviceFilter.length > 0) {
+            query += ` WHERE deviceId IN (${deviceFilter.map(() => '?').join(',')})`;
+            params.push(...deviceFilter);
         }
-        res.json(rows);
-    });
+
+        query += " ORDER BY timestamp DESC LIMIT ?";
+        params.push(parseInt(limit));
+
+        db.all(query, params, (err, rows) => {
+            if (err) {
+                console.error("❌ Error fetching data:", err);
+                return res.status(500).json({ error: "Database error" });
+            }
+            res.json(rows);
+        });
+    };
+
+    if (farmerId) {
+        getFarmerDeviceIds(farmerId, (err, ids) => {
+            if (err) return res.status(500).json({ error: "DB error" });
+            if (ids.length === 0) return res.json([]);
+            runQuery(ids);
+        });
+    } else {
+        runQuery([]);
+    }
 });
 
 // POST data endpoint
