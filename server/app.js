@@ -214,9 +214,9 @@ db.run(`CREATE TABLE IF NOT EXISTS farmers (
     db.get("SELECT COUNT(*) as cnt FROM farmers", async (e2, row) => {
         if (!e2 && row.cnt === 0) {
             const hashedPin = await bcrypt.hash("0000", 10);
-            db.run("INSERT INTO farmers (username, pin, role) VALUES (?, ?, ?)",
-                ["admin", hashedPin, "admin"],
-                () => console.log("✅ Default admin created (pin: 0000)"));
+            db.run("INSERT INTO farmers (username, pin, role, reference_code) VALUES (?, ?, ?, ?)",
+                ["admin", hashedPin, "admin", "284178"],
+                () => console.log("✅ Default admin created (pin: 0000, ref: 284178)"));
         }
     });
 });
@@ -671,23 +671,27 @@ app.get("/api/fcm-health", (req, res) => {
 app.get("/api/latest", (req, res) => {
     const farmerId = req.headers['x-farmer-id'];
     const runQuery = (deviceFilter) => {
-        const whereClause = deviceFilter.length > 0
-            ? `WHERE s1.deviceId IN (${deviceFilter.map(() => '?').join(',')})`
-            : '';
+        const hasFilter = deviceFilter && deviceFilter.length > 0;
         const query = `
           SELECT s1.*
           FROM sensor_data s1
           INNER JOIN (
             SELECT deviceId, MAX(timestamp) as latest
             FROM sensor_data
-            ${deviceFilter.length > 0 ? `WHERE deviceId IN (${deviceFilter.map(() => '?').join(',')})` : ''}
+            ${hasFilter ? `WHERE deviceId IN (${deviceFilter.map(() => '?').join(',')})` : ''}
             GROUP BY deviceId
           ) s2 ON s1.deviceId = s2.deviceId AND s1.timestamp = s2.latest
+          ${hasFilter ? `WHERE s1.deviceId IN (${deviceFilter.map(() => '?').join(',')})` : ''}
           ORDER BY s1.deviceId
         `;
-        const params = deviceFilter.length > 0 ? [...deviceFilter] : [];
+        // Pass deviceFilter twice if filter is present
+        const params = hasFilter ? [...deviceFilter, ...deviceFilter] : [];
+
         db.all(query, params, (err, rows) => {
-            if (err) { console.error("❌ DB read error:", err); return res.status(500).json({ error: "Database error" }); }
+            if (err) {
+                console.error("❌ DB read error in /api/latest:", err);
+                return res.status(500).json({ error: "Database error", details: err.message });
+            }
             res.json(rows || []);
         });
     };
@@ -988,8 +992,13 @@ app.get("/api/trends/:deviceId", async (req, res) => {
             });
         }
 
-        const analytics = generateDashboardAnalytics(rows, farmerConfig);
-        res.json(analytics);
+        try {
+            const analytics = generateDashboardAnalytics(rows, farmerConfig);
+            res.json(analytics);
+        } catch (analyticsError) {
+            console.error("❌ Analytics generation error:", analyticsError);
+            res.status(500).json({ error: "Failed to generate analytics", details: analyticsError.message });
+        }
     });
 });
 
@@ -1195,339 +1204,339 @@ function generateDetailedSummary(latest, trends, changes, thresholds = CONFIG.th
 
         return summaries;  // Return array instead of joined string
     }
-
-    function getTemperatureTrendExplanation(trend, change, currentTemp) {
-        const trendLabel = getTrendLabel(trend);
-        let explanation = "";
-
-        if (trendLabel === 'RISING_RAPIDLY') {
-            explanation = `Temperature rising rapidly (${change.toFixed(1)}°C/h). `;
-        } else if (trendLabel === 'RISING') {
-            explanation = `Temperature slowly rising. `;
-        } else if (trendLabel === 'FALLING_RAPIDLY') {
-            explanation = `Temperature falling rapidly. `;
-        } else if (trendLabel === 'FALLING') {
-            explanation = `Temperature slowly falling. `;
-        } else {
-            explanation = `Temperature stable. `;
-        }
-
-        // Add potato-specific context
-        if (currentTemp > 12) {
-            explanation += `Current ${currentTemp.toFixed(1)}°C is ABOVE ideal potato range (4-8°C).`;
-        } else if (currentTemp < 4) {
-            explanation += `Current ${currentTemp.toFixed(1)}°C is BELOW ideal potato range (4-8°C).`;
-        } else {
-            explanation += `Current ${currentTemp.toFixed(1)}°C is within ideal potato range (4-8°C).`;
-        }
-
-        return explanation;
-    }
-
-    function getHumidityTrendExplanation(trend, change, currentHum) {
-        const trendLabel = getTrendLabel(trend);
-        let explanation = "";
-
-        if (trendLabel === 'RISING_RAPIDLY') {
-            explanation = `Humidity rising rapidly (${change.toFixed(1)}%/h). `;
-        } else if (trendLabel === 'RISING') {
-            explanation = `Humidity slowly rising. `;
-        } else if (trendLabel === 'FALLING_RAPIDLY') {
-            explanation = `Humidity falling rapidly. `;
-        } else if (trendLabel === 'FALLING') {
-            explanation = `Humidity slowly falling. `;
-        } else {
-            explanation = `Humidity stable. `;
-        }
-
-        // Add potato-specific context
-        if (currentHum < 85) {
-            explanation += `Current ${currentHum.toFixed(1)}% is BELOW ideal potato humidity (90-95%).`;
-        } else if (currentHum > 95) {
-            explanation += `Current ${currentHum.toFixed(1)}% is ABOVE ideal potato humidity (90-95%).`;
-        } else {
-            explanation += `Current ${currentHum.toFixed(1)}% is within ideal potato humidity range.`;
-        }
-
-        return explanation;
-    }
-
-    function getRiskTrendExplanation(trend, change, currentRisk) {
-        const trendLabel = getTrendLabel(trend);
-        let explanation = "";
-
-        if (trendLabel === 'RISING_RAPIDLY') {
-            explanation = `Risk increasing rapidly (${change.toFixed(1)}%/h). `;
-        } else if (trendLabel === 'RISING') {
-            explanation = `Risk slowly increasing. `;
-        } else if (trendLabel === 'FALLING_RAPIDLY') {
-            explanation = `Risk decreasing rapidly. `;
-        } else if (trendLabel === 'FALLING') {
-            explanation = `Risk slowly decreasing. `;
-        } else {
-            explanation = `Risk stable. `;
-        }
-
-        // Add risk level context
-        if (currentRisk > 70) {
-            explanation += `Current risk ${currentRisk.toFixed(1)}% is CRITICAL. Immediate action needed.`;
-        } else if (currentRisk > 40) {
-            explanation += `Current risk ${currentRisk.toFixed(1)}% is ELEVATED. Monitor closely.`;
-        } else {
-            explanation += `Current risk ${currentRisk.toFixed(1)}% is ACCEPTABLE.`;
-        }
-
-        return explanation;
-    }
-
-    function getAirQualityExplanation(trend, change, currentMQ) {
-        const trendLabel = getTrendLabel(trend);
-        let explanation = "";
-
-        if (trendLabel === 'RISING_RAPIDLY') {
-            explanation = `Air quality declining rapidly. `;
-        } else if (trendLabel === 'RISING') {
-            explanation = `Air quality slowly declining. `;
-        } else if (trendLabel === 'FALLING_RAPIDLY') {
-            explanation = `Air quality improving rapidly. `;
-        } else if (trendLabel === 'FALLING') {
-            explanation = `Air quality slowly improving. `;
-        } else {
-            explanation = `Air quality stable. `;
-        }
-
-        // Add MQ135 value context
-        if (currentMQ > 500) {
-            explanation += `MQ135 reading ${currentMQ.toFixed(0)} indicates VERY POOR air quality.`;
-        } else if (currentMQ > 300) {
-            explanation += `MQ135 reading ${currentMQ.toFixed(0)} indicates POOR air quality.`;
-        } else if (currentMQ > 150) {
-            explanation += `MQ135 reading ${currentMQ.toFixed(0)} indicates MODERATE air quality.`;
-        } else {
-            explanation += `MQ135 reading ${currentMQ.toFixed(0)} indicates GOOD air quality.`;
-        }
-
-        return explanation;
-    }
-
-    function generatePredictionsWithReasoning(latest, predictedRisk, timeToCritical, riskChange, tempChange, humChange, mqChange) {
-        let reasoning = [];
-
-        // Build reasoning based on changes
-        if (riskChange > 0) {
-            reasoning.push(`Risk increasing at ${riskChange.toFixed(2)}% per hour`);
-        } else if (riskChange < 0) {
-            reasoning.push(`Risk decreasing at ${Math.abs(riskChange).toFixed(2)}% per hour`);
-        }
-
-        if (tempChange > 0.5) {
-            reasoning.push(`Temperature rising (${tempChange.toFixed(1)}°C/h) contributes to risk increase`);
-        }
-
-        if (humChange > 2) {
-            reasoning.push(`Humidity rising (${humChange.toFixed(1)}%/h) affects moisture content`);
-        }
-
-        if (mqChange > 50) {
-            reasoning.push(`Air quality declining indicates potential spoilage gases`);
-        }
-
-        // Dew point analysis
-        if (latest.dewPoint && (latest.temperature - latest.dewPoint) < 2) {
-            reasoning.push(`Condensation risk (temp-dew point <2°C) increases spoilage probability`);
-        }
-
-        return {
-            predictedRisk: predictedRisk.toFixed(1),
-            timeToCritical: timeToCritical,
-            confidence: calculateConfidenceWithFactors(10, {}, {}).level,
-            reasoning: reasoning.length > 0 ? reasoning : ["Conditions relatively stable"],
-            factors: {
-                temperatureInfluence: Math.abs(tempChange) * 1.5,
-                humidityInfluence: Math.abs(humChange) * 0.8,
-                airQualityInfluence: mqChange > 200 ? 1.2 : 0.5
-            }
-        };
-    }
-
-    function generatePrioritizedRecommendations(latest, trends, patterns, predictedRisk) {
-        const recommendations = [];
-        const risk = latest.spoilageRisk || 0;
-        const temp = latest.temperature || 0;
-        const hum = latest.humidity || 0;
-        const mq = latest.mq_value || 0;
-
-        // Critical alerts (highest priority)
-        if (temp < 3) {
-            recommendations.push({
-                priority: 'CRITICAL',
-                message: '🚨 FREEZING TEMPERATURE: Immediate action needed to prevent potato damage!',
-                action: 'Increase heating immediately'
-            });
-        }
-
-        if (risk > 70) {
-            recommendations.push({
-                priority: 'CRITICAL',
-                message: '🚨 CRITICAL SPOILAGE RISK: Immediate intervention required',
-                action: 'Check grain condition and adjust environment'
-            });
-        }
-
-        // High priority warnings
-        if (temp > 12) {
-            recommendations.push({
-                priority: 'HIGH',
-                message: '🌡️ Temperature too high for potato storage',
-                action: 'Increase cooling/ventilation to reach 4-8°C range'
-            });
-        }
-
-        if (hum < 85) {
-            recommendations.push({
-                priority: 'HIGH',
-                message: '💧 Humidity too low - risk of weight loss',
-                action: 'Increase humidity to 90-95% range'
-            });
-        }
-
-        if (hum > 95) {
-            recommendations.push({
-                priority: 'HIGH',
-                message: '💦 Humidity very high - condensation risk',
-                action: 'Reduce humidity and check for wet spots'
-            });
-        }
-
-        // Medium priority
-        if (latest.dewPoint && (temp - latest.dewPoint) < 2) {
-            recommendations.push({
-                priority: 'MEDIUM',
-                message: '⚠️ Condensation risk detected',
-                action: 'Monitor for moisture and improve air circulation'
-            });
-        }
-
-        if (mq > 300) {
-            recommendations.push({
-                priority: 'MEDIUM',
-                message: '☣️ Poor air quality detected',
-                action: 'Increase ventilation to reduce gas levels'
-            });
-        }
-
-        // Trend-based recommendations
-        if (trends.spoilageRisk?.value?.includes('RISING')) {
-            recommendations.push({
-                priority: 'MEDIUM',
-                message: '📈 Spoilage risk is increasing',
-                action: 'Monitor closely and prepare to adjust conditions'
-            });
-        }
-
-        // Low priority / informational
-        if (temp >= 4 && temp <= 8 && hum >= 90 && hum <= 95 && risk < 40) {
-            recommendations.push({
-                priority: 'LOW',
-                message: '✅ Conditions optimal for potato storage',
-                action: 'Maintain current temperature (4-8°C) and humidity (90-95%)'
-            });
-        }
-
-        // Sort by priority
-        const priorityOrder = { 'CRITICAL': 0, 'HIGH': 1, 'MEDIUM': 2, 'LOW': 3 };
-        recommendations.sort((a, b) => priorityOrder[a.priority] - priorityOrder[b.priority]);
-
-        return recommendations;
-    }
-
-    function calculateConfidenceWithFactors(dataPoints, trends, patterns) {
-        let score = 0;
-        let factors = [];
-
-        // Data volume factor
-        if (dataPoints > 20) {
-            score += 40;
-            factors.push("High data volume (20+ points)");
-        } else if (dataPoints > 10) {
-            score += 25;
-            factors.push("Moderate data volume (10-20 points)");
-        } else {
-            score += 10;
-            factors.push("Low data volume (<10 points)");
-        }
-
-        // Trend clarity factor
-        const clearTrends = Object.values(trends).filter(t =>
-            t.value !== 'STABLE' && t.value !== 'INSUFFICIENT_DATA'
-        ).length;
-
-        if (clearTrends >= 2) {
-            score += 30;
-            factors.push("Clear trends detected");
-        } else if (clearTrends >= 1) {
-            score += 15;
-            factors.push("Some trends detected");
-        }
-
-        // Pattern detection factor
-        const detectedPatterns = Object.values(patterns).filter(p => p.detected).length;
-        if (detectedPatterns > 0) {
-            score += 20;
-            factors.push("Patterns detected in data");
-        }
-
-        // Data consistency factor
-        score += 10; // Base consistency
-        factors.push("Data appears consistent");
-
-        // Determine confidence level
-        let level = 'low';
-        if (score >= 70) level = 'high';
-        else if (score >= 40) level = 'medium';
-
-        return {
-            level,
-            score,
-            factors
-        };
-    }
-
-    function calculateSimpleTrend(data) {
-        if (data.length < 2) return 0;
-
-        const firstHalf = data.slice(0, Math.floor(data.length / 2));
-        const secondHalf = data.slice(Math.floor(data.length / 2));
-
-        const avgFirst = firstHalf.reduce((a, b) => a + b, 0) / firstHalf.length;
-        const avgSecond = secondHalf.reduce((a, b) => a + b, 0) / secondHalf.length;
-
-        return avgSecond - avgFirst;
-    }
-
-    function getTrendLabel(trendValue) {
-        if (trendValue > 1.0) return 'RISING_RAPIDLY';
-        if (trendValue > 0.3) return 'RISING';
-        if (trendValue < -1.0) return 'FALLING_RAPIDLY';
-        if (trendValue < -0.3) return 'FALLING';
-        return 'STABLE';
-    }
-
-    function detectAcceleratingTrend(data) {
-        if (data.length < 4) return false;
-
-        const firstHalf = data.slice(0, Math.floor(data.length / 2));
-        const secondHalf = data.slice(Math.floor(data.length / 2));
-
-        const firstTrend = calculateSimpleTrend(firstHalf);
-        const secondTrend = calculateSimpleTrend(secondHalf);
-
-        return Math.abs(secondTrend) > Math.abs(firstTrend) * 1.5;
-    }
-
-
-
 }
+
+function getTemperatureTrendExplanation(trend, change, currentTemp) {
+    const trendLabel = getTrendLabel(trend);
+    let explanation = "";
+
+    if (trendLabel === 'RISING_RAPIDLY') {
+        explanation = `Temperature rising rapidly (${change.toFixed(1)}°C/h). `;
+    } else if (trendLabel === 'RISING') {
+        explanation = `Temperature slowly rising. `;
+    } else if (trendLabel === 'FALLING_RAPIDLY') {
+        explanation = `Temperature falling rapidly. `;
+    } else if (trendLabel === 'FALLING') {
+        explanation = `Temperature slowly falling. `;
+    } else {
+        explanation = `Temperature stable. `;
+    }
+
+    // Add potato-specific context
+    if (currentTemp > 12) {
+        explanation += `Current ${currentTemp.toFixed(1)}°C is ABOVE ideal potato range (4-8°C).`;
+    } else if (currentTemp < 4) {
+        explanation += `Current ${currentTemp.toFixed(1)}°C is BELOW ideal potato range (4-8°C).`;
+    } else {
+        explanation += `Current ${currentTemp.toFixed(1)}°C is within ideal potato range (4-8°C).`;
+    }
+
+    return explanation;
+}
+
+function getHumidityTrendExplanation(trend, change, currentHum) {
+    const trendLabel = getTrendLabel(trend);
+    let explanation = "";
+
+    if (trendLabel === 'RISING_RAPIDLY') {
+        explanation = `Humidity rising rapidly (${change.toFixed(1)}%/h). `;
+    } else if (trendLabel === 'RISING') {
+        explanation = `Humidity slowly rising. `;
+    } else if (trendLabel === 'FALLING_RAPIDLY') {
+        explanation = `Humidity falling rapidly. `;
+    } else if (trendLabel === 'FALLING') {
+        explanation = `Humidity slowly falling. `;
+    } else {
+        explanation = `Humidity stable. `;
+    }
+
+    // Add potato-specific context
+    if (currentHum < 85) {
+        explanation += `Current ${currentHum.toFixed(1)}% is BELOW ideal potato humidity (90-95%).`;
+    } else if (currentHum > 95) {
+        explanation += `Current ${currentHum.toFixed(1)}% is ABOVE ideal potato humidity (90-95%).`;
+    } else {
+        explanation += `Current ${currentHum.toFixed(1)}% is within ideal potato humidity range.`;
+    }
+
+    return explanation;
+}
+
+function getRiskTrendExplanation(trend, change, currentRisk) {
+    const trendLabel = getTrendLabel(trend);
+    let explanation = "";
+
+    if (trendLabel === 'RISING_RAPIDLY') {
+        explanation = `Risk increasing rapidly (${change.toFixed(1)}%/h). `;
+    } else if (trendLabel === 'RISING') {
+        explanation = `Risk slowly increasing. `;
+    } else if (trendLabel === 'FALLING_RAPIDLY') {
+        explanation = `Risk decreasing rapidly. `;
+    } else if (trendLabel === 'FALLING') {
+        explanation = `Risk slowly decreasing. `;
+    } else {
+        explanation = `Risk stable. `;
+    }
+
+    // Add risk level context
+    if (currentRisk > 70) {
+        explanation += `Current risk ${currentRisk.toFixed(1)}% is CRITICAL. Immediate action needed.`;
+    } else if (currentRisk > 40) {
+        explanation += `Current risk ${currentRisk.toFixed(1)}% is ELEVATED. Monitor closely.`;
+    } else {
+        explanation += `Current risk ${currentRisk.toFixed(1)}% is ACCEPTABLE.`;
+    }
+
+    return explanation;
+}
+
+function getAirQualityExplanation(trend, change, currentMQ) {
+    const trendLabel = getTrendLabel(trend);
+    let explanation = "";
+
+    if (trendLabel === 'RISING_RAPIDLY') {
+        explanation = `Air quality declining rapidly. `;
+    } else if (trendLabel === 'RISING') {
+        explanation = `Air quality slowly declining. `;
+    } else if (trendLabel === 'FALLING_RAPIDLY') {
+        explanation = `Air quality improving rapidly. `;
+    } else if (trendLabel === 'FALLING') {
+        explanation = `Air quality slowly improving. `;
+    } else {
+        explanation = `Air quality stable. `;
+    }
+
+    // Add MQ135 value context
+    if (currentMQ > 500) {
+        explanation += `MQ135 reading ${currentMQ.toFixed(0)} indicates VERY POOR air quality.`;
+    } else if (currentMQ > 300) {
+        explanation += `MQ135 reading ${currentMQ.toFixed(0)} indicates POOR air quality.`;
+    } else if (currentMQ > 150) {
+        explanation += `MQ135 reading ${currentMQ.toFixed(0)} indicates MODERATE air quality.`;
+    } else {
+        explanation += `MQ135 reading ${currentMQ.toFixed(0)} indicates GOOD air quality.`;
+    }
+
+    return explanation;
+}
+
+function generatePredictionsWithReasoning(latest, predictedRisk, timeToCritical, riskChange, tempChange, humChange, mqChange) {
+    let reasoning = [];
+
+    // Build reasoning based on changes
+    if (riskChange > 0) {
+        reasoning.push(`Risk increasing at ${riskChange.toFixed(2)}% per hour`);
+    } else if (riskChange < 0) {
+        reasoning.push(`Risk decreasing at ${Math.abs(riskChange).toFixed(2)}% per hour`);
+    }
+
+    if (tempChange > 0.5) {
+        reasoning.push(`Temperature rising (${tempChange.toFixed(1)}°C/h) contributes to risk increase`);
+    }
+
+    if (humChange > 2) {
+        reasoning.push(`Humidity rising (${humChange.toFixed(1)}%/h) affects moisture content`);
+    }
+
+    if (mqChange > 50) {
+        reasoning.push(`Air quality declining indicates potential spoilage gases`);
+    }
+
+    // Dew point analysis
+    if (latest.dewPoint && (latest.temperature - latest.dewPoint) < 2) {
+        reasoning.push(`Condensation risk (temp-dew point <2°C) increases spoilage probability`);
+    }
+
+    return {
+        predictedRisk: predictedRisk.toFixed(1),
+        timeToCritical: timeToCritical,
+        confidence: calculateConfidenceWithFactors(10, {}, {}).level,
+        reasoning: reasoning.length > 0 ? reasoning : ["Conditions relatively stable"],
+        factors: {
+            temperatureInfluence: Math.abs(tempChange) * 1.5,
+            humidityInfluence: Math.abs(humChange) * 0.8,
+            airQualityInfluence: mqChange > 200 ? 1.2 : 0.5
+        }
+    };
+}
+
+function generatePrioritizedRecommendations(latest, trends, patterns, predictedRisk) {
+    const recommendations = [];
+    const risk = latest.spoilageRisk || 0;
+    const temp = latest.temperature || 0;
+    const hum = latest.humidity || 0;
+    const mq = latest.mq_value || 0;
+
+    // Critical alerts (highest priority)
+    if (temp < 3) {
+        recommendations.push({
+            priority: 'CRITICAL',
+            message: '🚨 FREEZING TEMPERATURE: Immediate action needed to prevent potato damage!',
+            action: 'Increase heating immediately'
+        });
+    }
+
+    if (risk > 70) {
+        recommendations.push({
+            priority: 'CRITICAL',
+            message: '🚨 CRITICAL SPOILAGE RISK: Immediate intervention required',
+            action: 'Check grain condition and adjust environment'
+        });
+    }
+
+    // High priority warnings
+    if (temp > 12) {
+        recommendations.push({
+            priority: 'HIGH',
+            message: '🌡️ Temperature too high for potato storage',
+            action: 'Increase cooling/ventilation to reach 4-8°C range'
+        });
+    }
+
+    if (hum < 85) {
+        recommendations.push({
+            priority: 'HIGH',
+            message: '💧 Humidity too low - risk of weight loss',
+            action: 'Increase humidity to 90-95% range'
+        });
+    }
+
+    if (hum > 95) {
+        recommendations.push({
+            priority: 'HIGH',
+            message: '💦 Humidity very high - condensation risk',
+            action: 'Reduce humidity and check for wet spots'
+        });
+    }
+
+    // Medium priority
+    if (latest.dewPoint && (temp - latest.dewPoint) < 2) {
+        recommendations.push({
+            priority: 'MEDIUM',
+            message: '⚠️ Condensation risk detected',
+            action: 'Monitor for moisture and improve air circulation'
+        });
+    }
+
+    if (mq > 300) {
+        recommendations.push({
+            priority: 'MEDIUM',
+            message: '☣️ Poor air quality detected',
+            action: 'Increase ventilation to reduce gas levels'
+        });
+    }
+
+    // Trend-based recommendations
+    if (trends.spoilageRisk?.value?.includes('RISING')) {
+        recommendations.push({
+            priority: 'MEDIUM',
+            message: '📈 Spoilage risk is increasing',
+            action: 'Monitor closely and prepare to adjust conditions'
+        });
+    }
+
+    // Low priority / informational
+    if (temp >= 4 && temp <= 8 && hum >= 90 && hum <= 95 && risk < 40) {
+        recommendations.push({
+            priority: 'LOW',
+            message: '✅ Conditions optimal for potato storage',
+            action: 'Maintain current temperature (4-8°C) and humidity (90-95%)'
+        });
+    }
+
+    // Sort by priority
+    const priorityOrder = { 'CRITICAL': 0, 'HIGH': 1, 'MEDIUM': 2, 'LOW': 3 };
+    recommendations.sort((a, b) => priorityOrder[a.priority] - priorityOrder[b.priority]);
+
+    return recommendations;
+}
+
+function calculateConfidenceWithFactors(dataPoints, trends, patterns) {
+    let score = 0;
+    let factors = [];
+
+    // Data volume factor
+    if (dataPoints > 20) {
+        score += 40;
+        factors.push("High data volume (20+ points)");
+    } else if (dataPoints > 10) {
+        score += 25;
+        factors.push("Moderate data volume (10-20 points)");
+    } else {
+        score += 10;
+        factors.push("Low data volume (<10 points)");
+    }
+
+    // Trend clarity factor
+    const clearTrends = Object.values(trends).filter(t =>
+        t.value !== 'STABLE' && t.value !== 'INSUFFICIENT_DATA'
+    ).length;
+
+    if (clearTrends >= 2) {
+        score += 30;
+        factors.push("Clear trends detected");
+    } else if (clearTrends >= 1) {
+        score += 15;
+        factors.push("Some trends detected");
+    }
+
+    // Pattern detection factor
+    const detectedPatterns = Object.values(patterns).filter(p => p.detected).length;
+    if (detectedPatterns > 0) {
+        score += 20;
+        factors.push("Patterns detected in data");
+    }
+
+    // Data consistency factor
+    score += 10; // Base consistency
+    factors.push("Data appears consistent");
+
+    // Determine confidence level
+    let level = 'low';
+    if (score >= 70) level = 'high';
+    else if (score >= 40) level = 'medium';
+
+    return {
+        level,
+        score,
+        factors
+    };
+}
+
+function calculateSimpleTrend(data) {
+    if (data.length < 2) return 0;
+
+    const firstHalf = data.slice(0, Math.floor(data.length / 2));
+    const secondHalf = data.slice(Math.floor(data.length / 2));
+
+    const avgFirst = firstHalf.reduce((a, b) => a + b, 0) / firstHalf.length;
+    const avgSecond = secondHalf.reduce((a, b) => a + b, 0) / secondHalf.length;
+
+    return avgSecond - avgFirst;
+}
+
+function getTrendLabel(trendValue) {
+    if (trendValue > 1.0) return 'RISING_RAPIDLY';
+    if (trendValue > 0.3) return 'RISING';
+    if (trendValue < -1.0) return 'FALLING_RAPIDLY';
+    if (trendValue < -0.3) return 'FALLING';
+    return 'STABLE';
+}
+
+function detectAcceleratingTrend(data) {
+    if (data.length < 4) return false;
+
+    const firstHalf = data.slice(0, Math.floor(data.length / 2));
+    const secondHalf = data.slice(Math.floor(data.length / 2));
+
+    const firstTrend = calculateSimpleTrend(firstHalf);
+    const secondTrend = calculateSimpleTrend(secondHalf);
+
+    return Math.abs(secondTrend) > Math.abs(firstTrend) * 1.5;
+}
+
+
+
 
 // Health check
 app.get("/health", (req, res) => {
