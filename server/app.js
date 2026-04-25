@@ -214,9 +214,10 @@ db.run(`CREATE TABLE IF NOT EXISTS farmers (
     db.get("SELECT COUNT(*) as cnt FROM farmers", async (e2, row) => {
         if (!e2 && row.cnt === 0) {
             const hashedPin = await bcrypt.hash("0000", 10);
+            const refCode = await generateRefCode();
             db.run("INSERT INTO farmers (username, pin, role, reference_code) VALUES (?, ?, ?, ?)",
-                ["admin", hashedPin, "admin", "284178"],
-                () => console.log("✅ Default admin created (pin: 0000, ref: 284178)"));
+                ["admin", hashedPin, "admin", refCode],
+                () => console.log(`✅ Default admin created (pin: 0000, ref: ${refCode})`));
         }
     });
 });
