@@ -1534,6 +1534,15 @@ function detectAcceleratingTrend(data) {
     return Math.abs(secondTrend) > Math.abs(firstTrend) * 1.5;
 }
 
+// Detects if the last value is significantly higher than the average of the rest
+function detectSpike(data, threshold = 0.15) {
+    if (data.length < 3) return false;
+    const recent = data[data.length - 1];
+    const prior = data.slice(0, -1);
+    const avg = prior.reduce((a, b) => a + b, 0) / prior.length;
+    if (avg === 0) return false;
+    return Math.abs(recent - avg) / avg > threshold;
+}
 
 
 
