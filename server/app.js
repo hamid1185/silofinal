@@ -915,6 +915,7 @@ app.get("/api/history/:deviceId", (req, res) => {
     const cols = `id, deviceId, temperature, humidity, mq_value, spoilageRisk,
       grainHealth, dewPoint, absoluteHumidity, vaporPressureDeficit,
       equilibriumMoistureContent, trendAnalysis, prediction, rssi, ip,
+      timestamp,
       datetime(timestamp, 'localtime') as ts_server,
       strftime('%H:%M', timestamp, 'localtime') as time_display`;
 
@@ -947,7 +948,7 @@ app.get("/api/trends/:deviceId", async (req, res) => {
     SELECT 
       temperature, humidity, mq_value, spoilageRisk, grainHealth, dewPoint,
       absoluteHumidity, vaporPressureDeficit, equilibriumMoistureContent,
-      trendAnalysis, prediction, rssi, ip,
+      trendAnalysis, prediction, rssi, ip, timestamp,
       datetime(timestamp, 'localtime') as ts_server,
       strftime('%H:%M', timestamp, 'localtime') as time_display
     FROM sensor_data 
