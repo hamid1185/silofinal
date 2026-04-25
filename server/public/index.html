@@ -8,27 +8,87 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <link rel="stylesheet" href="styles.css">
   <style>
-    .farmer-tag { font-size: 0.8rem; color: #94a3b8; display: flex; align-items: center; gap: 6px; }
-    .farmer-tag .dot { width: 7px; height: 7px; border-radius: 50%; background: #10b981; animation: pulse 2s infinite; }
-    @keyframes pulse { 0%,100%{opacity:1;} 50%{opacity:0.4;} }
+    .farmer-tag {
+      font-size: 0.8rem;
+      color: #94a3b8;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .farmer-tag .dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #10b981;
+      animation: pulse 2s infinite;
+    }
+
+    @keyframes pulse {
+
+      0%,
+      100% {
+        opacity: 1;
+      }
+
+      50% {
+        opacity: 0.4;
+      }
+    }
+
     .delete-node-btn {
-      background: rgba(239,68,68,0.1); color: #fca5a5;
-      border: 1px solid rgba(239,68,68,0.25); border-radius: 6px;
-      padding: 5px 12px; font-size: 0.75rem; cursor: pointer;
+      background: rgba(239, 68, 68, 0.1);
+      color: #fca5a5;
+      border: 1px solid rgba(239, 68, 68, 0.25);
+      border-radius: 6px;
+      padding: 5px 12px;
+      font-size: 0.75rem;
+      cursor: pointer;
       transition: background 0.15s, border-color 0.15s;
     }
-    .delete-node-btn:hover { background: rgba(239,68,68,0.22); border-color: #ef4444; color: white; }
-    .node-actions { display: flex; justify-content: flex-end; margin-top: 12px; }
-    .toast {
-      position:fixed; bottom:24px; right:24px;
-      background:#111827; border:1px solid #1e3a5f;
-      border-radius:10px; padding:12px 18px; font-size:0.85rem;
-      box-shadow:0 8px 32px rgba(0,0,0,0.4); display:none;
-      align-items:center; gap:10px; z-index:9999; max-width:320px;
+
+    .delete-node-btn:hover {
+      background: rgba(239, 68, 68, 0.22);
+      border-color: #ef4444;
+      color: white;
     }
-    .toast.show { display:flex; }
-    .toast.success { border-left:3px solid #10b981; color:#f1f5f9; }
-    .toast.error { border-left:3px solid #ef4444; color:#fca5a5; }
+
+    .node-actions {
+      display: flex;
+      justify-content: flex-end;
+      margin-top: 12px;
+    }
+
+    .toast {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      background: #111827;
+      border: 1px solid #1e3a5f;
+      border-radius: 10px;
+      padding: 12px 18px;
+      font-size: 0.85rem;
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+      display: none;
+      align-items: center;
+      gap: 10px;
+      z-index: 9999;
+      max-width: 320px;
+    }
+
+    .toast.show {
+      display: flex;
+    }
+
+    .toast.success {
+      border-left: 3px solid #10b981;
+      color: #f1f5f9;
+    }
+
+    .toast.error {
+      border-left: 3px solid #ef4444;
+      color: #fca5a5;
+    }
   </style>
 </head>
 
@@ -40,7 +100,10 @@
     <div class="topbar-right">
       <div class="farmer-tag"><span class="dot"></span><span id="farmerLabel">Loading...</span></div>
       <span style="color:#64748b;font-size:0.8rem">Last updated: <span id="lastUpdated">-</span></span>
-      <button class="refresh-btn" onclick="window.location.href='/history.html'" style="background: #8b5cf6;">History</button>
+      <button class="refresh-btn" onclick="window.location.href='/settings.html'" style="background: #10b981;">⚙️
+        Settings</button>
+      <button class="refresh-btn" onclick="window.location.href='/history.html'"
+        style="background: #8b5cf6;">History</button>
       <button class="refresh-btn" onclick="refreshAll()">
         <span class="spinner" id="refreshSpinner" style="display: none;"></span>
         Refresh
@@ -99,7 +162,7 @@
   </div>
 
   <!-- Analytics Modal -->
-  <div id="analyticsModal" class="modal" style="display: none;">
+  <div id="analyticsModal" class="modal">
     <div class="modal-content">
       <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px;">
         <h3 style="font-size: 1.3rem; font-weight: 600; color: #f1f5f9;" id="modalTitle">Analytics</h3>
@@ -130,6 +193,9 @@
         return false;
       }
       document.getElementById('farmerLabel').textContent = `👤 ${session.username}`;
+      if (session.role === 'admin') {
+        document.getElementById('adminBtn').style.display = 'inline-flex';
+      }
       return true;
     }
 
@@ -162,10 +228,6 @@
       setInterval(updateTimestamp, 1000);
 
       updateTimestamp();
-    } catch (e) {
-      console.error("Dashboard init failed:", e);
-      document.body.classList.remove('loading');
-    }
     }
 
     async function loadData() {
